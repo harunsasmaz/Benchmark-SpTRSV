@@ -40,7 +40,7 @@ void sptrsv_syncfree_cuda_executor(const int* __restrict__        d_cscColPtr,
 
     volatile __shared__ int s_graphInDegree[WARP_PER_BLOCK];
     volatile __shared__ VALUE_TYPE s_left_sum[WARP_PER_BLOCK];
-    
+
     // Initialize
     const int local_warp_id = threadIdx.x / WARP_SIZE;
     const int lane_id = (WARP_SIZE - 1) & threadIdx.x;
@@ -62,6 +62,7 @@ void sptrsv_syncfree_cuda_executor(const int* __restrict__        d_cscColPtr,
     // Consumer
     do {
         start = clock();
+        __syncwarp();
     }
     while (s_graphInDegree[local_warp_id] != d_graphInDegree[global_x_id]);
   
@@ -519,10 +520,10 @@ int sptrsv_syncfree_cuda(const int           *cscColPtrTR,
             //num_threads = 1 * WARP_SIZE;
             num_blocks = ceil ((double)m / (double)(num_threads/WARP_SIZE));
             //sptrsv_syncfree_cuda_executor<<< num_blocks, num_threads >>>
-            sptrsv_syncfree_cuda_executor_update<<< num_blocks, num_threads >>>
+            sptrsv_syncfree_cuda_executor<<< num_blocks, num_threads >>>
                                          (d_cscColPtrTR, d_cscRowIdxTR, d_cscValTR,
                                           d_graphInDegree, d_left_sum,
-                                          m, substitution, d_b, d_x, d_while_profiler, d_id_extractor);
+                                          m, substitution, d_b, d_x, d_while_profiler);
         }
         else
         {
@@ -626,25 +627,22 @@ void sptrsv_zerocopy_cuda_executor(const int* __restrict__        d_cscColPtr,
     int global_x_id = global_id / WARP_SIZE;
     if (global_x_id >= n) return;
  
-    // Initialize
     const int local_warp_id = threadIdx.x / WARP_SIZE;
     const int lane_id = (WARP_SIZE - 1) & threadIdx.x;
     int starting_x = displs;
 
     clock_t start;
-    // Consumer
     do {
         start = clock();
+        __syncwarp();
     }
     while (s_in_degree[global_x_id] != d_in_degree[global_x_id] + 1);
     
-    // Calculate x_i
     const int pos = d_cscColPtr[global_x_id];
     const VALUE_TYPE coef = (VALUE_TYPE)1 / d_cscVal[pos];
     VALUE_TYPE xi = d_left_sum[global_x_id] + s_left_sum[global_x_id];
     xi = (d_b[global_x_id] - xi) * coef;
 
-    // Producer
     const int start_ptr = d_cscColPtr[global_x_id] + 1;
     const int stop_ptr  = d_cscColPtr[global_x_id + 1];
 
@@ -662,12 +660,11 @@ void sptrsv_zerocopy_cuda_executor(const int* __restrict__        d_cscColPtr,
         }
         else {
             atomicAdd(&s_left_sum[rowIdx], xi * d_cscVal[j]);
-            __threadfence_device();
+            //__threadfence();
             atomicSub(&s_in_degree[rowIdx], 1);
         }
     }
 
-    //finish
     if (!lane_id) d_x[global_x_id] = xi;
 }
 
@@ -687,12 +684,11 @@ int sptrsv_zerocopy_cuda(const int           *cscColPtrTR,
         return -1;
     }
 
-    int ngpu = cudaGetDeviceCount();
+    int ngpu = 1; //cudaGetDeviceCount();
     
     // calculate which GPU gets which cols
     int colCounts[ngpu], colDispls[ngpu];
     int colCount = round((double)n / ngpu);
-    int lastColCount = n - (ngpu - 1) * colCount;
     for(int i = 0; i < ngpu - 1; i++)
     {
         colCounts[i] = colCount;
@@ -705,12 +701,13 @@ int sptrsv_zerocopy_cuda(const int           *cscColPtrTR,
     int eCounts[ngpu], eDispls[ngpu];
     for(int i = 0; i < ngpu; i++)
     {
-        eCounts[i] = cscColPtrTR[i * colCount + colCounts[i]] - cscColPtrTR[i * colCount];
-        eDispls[i] = cscColPtrTR[i * colCount];
+        eCounts[i] = cscColPtrTR[colDispls[i] + colCounts[i]] - cscColPtrTR[colDispls[i]];
+        eDispls[i] = cscColPtrTR[colDispls[i]];
     }
 
     // initialize intermediate arrays
-    int* s_left_sum, *s_in_degree;
+    VALUE_TYPE* s_left_sum;
+    int *s_in_degree;
     cudaMallocManaged((void**)&s_left_sum, n * sizeof(int));
     cudaMallocManaged((void**)&s_in_degree, n * sizeof(int));
     cudaMemset(s_left_sum, 0, n * sizeof(int));
@@ -763,8 +760,8 @@ int sptrsv_zerocopy_cuda(const int           *cscColPtrTR,
     //  - cuda zercopu SpTRSV analysis start!
     printf(" - cuda zerocopy SpTRSV analysis start!\n");
 
-    int *d_in_degree[i];
-    VALUE_TYPE *d_left_sum[i];
+    int *d_in_degree[ngpu];
+    VALUE_TYPE *d_left_sum[ngpu];
 
     // Allocate local in_degree and left_sum arrays
     for(int i = 0; i < ngpu; i++)
@@ -787,7 +784,7 @@ int sptrsv_zerocopy_cuda(const int           *cscColPtrTR,
     int num_threads = 128;
     int num_blocks;
 
-    // run in_degree calculator
+    // BENCHMARK is not added until one iteration works correctly.
     for(int i = 0; i < ngpu; i++)
     {
         cudaSetDevice(i);
@@ -796,7 +793,7 @@ int sptrsv_zerocopy_cuda(const int           *cscColPtrTR,
                                     (d_cscRowIdxTR[i], colCounts[i], eCounts[i], s_in_degree);
     }
 
-    // wait until are devices are done with analysis.
+    // For safety, wait until are devices are done with analysis.
     for(int i = 0; i < ngpu; i++)
     {
         cudaSetDevice(i);
@@ -808,22 +805,25 @@ int sptrsv_zerocopy_cuda(const int           *cscColPtrTR,
 
     num_threads = WARP_PER_BLOCK * WARP_SIZE;
 
+    // BENCHMARK is not added until one loop works.
     for(int i = 0; i < ngpu; i++)
     {
         cudaSetDevice(i);
-        num_blocks = ceil((double)colCounts[i] / (num_threads/WARP_SIZE));
+        num_blocks = ceil((double)colCounts[i] / ((double)num_threads/WARP_SIZE));
         sptrsv_zerocopy_cuda_executor<<< num_blocks, num_threads >>>
                             (d_cscColPtrTR[i], d_cscRowIdxTR[i], d_cscValTR[i],
                                 d_in_degree[i], d_left_sum[i],
                                 colCounts[i], colDispls[i], d_b[i], d_x[i], s_in_degree, s_left_sum);
     }
 
+    // For safety, wait until all devices are done.
     for(int i = 0; i < ngpu; i++)
     {
         cudaSetDevice(i);
         cudaDeviceSynchronize();
     }
 
+    printf(" - cuda zerocopy SpTRSV solve finished!\n");
 
     // Gather partial device x vectors on host
     for(int i = 0; i < ngpu; i++)
@@ -833,12 +833,19 @@ int sptrsv_zerocopy_cuda(const int           *cscColPtrTR,
         cudaMemcpy(x + pos, d_x[i], cols * sizeof(VALUE_TYPE), cudaMemcpyDeviceToHost);
     }
 
+    // For safety, guarantee that gathering is done.
+    for(int i = 0; i < ngpu; i++)
+    {
+        cudaSetDevice(i);
+        cudaDeviceSynchronize();
+    }
+
     // validate x
     double accuracy = 1e-4;
     double ref = 0.0;
     double res = 0.0;
 
-    for (int i = 0; i < n * rhs; i++)
+    for (int i = 0; i < n; i++)
     {
         ref += abs(x_ref[i]);
         res += abs(x[i] - x_ref[i]);
@@ -864,6 +871,7 @@ int sptrsv_zerocopy_cuda(const int           *cscColPtrTR,
 
     return 0;
 }
+
 
 #endif
 

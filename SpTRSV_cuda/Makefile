@@ -8,7 +8,7 @@ VALUE_TYPE = double
 NVCC_FLAGS = -O3 -w -m64 -Xptxas -dlcm=cg -gencode=arch=compute_61,code=sm_61 -gencode=arch=compute_61,code=compute_61
 
 #ENVIRONMENT_PARAMETERS
-CUDA_INSTALL_PATH = /usr/local/cuda-8.0
+CUDA_INSTALL_PATH = /usr/local/cuda-10.1
 
 #includes
 INCLUDES = -I$(CUDA_INSTALL_PATH)/include
@@ -23,3 +23,7 @@ LIBS = $(CUDA_LIBS)
 
 make:
 	$(CC) $(NVCC_FLAGS) main.cu -o sptrsv $(INCLUDES) $(LIBS) $(OPTIONS) -D VALUE_TYPE=$(VALUE_TYPE)
+
+
+clean:
+	rm -f *.out sptrsv

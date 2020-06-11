@@ -19,7 +19,7 @@
 #endif
 
 #ifndef WARP_PER_BLOCK
-#define WARP_PER_BLOCK   16
+#define WARP_PER_BLOCK  16
 #endif
 
 #define SUBSTITUTION_FORWARD  0
