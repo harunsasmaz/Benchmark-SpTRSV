@@ -8,9 +8,9 @@
 #
 #SBATCH --job-name=sptrsv-job
 #SBATCH --nodes=1
-#SBATCH --partition=short
+#SBATCH --partition=dgx2q
 #SBATCH --time=00:30:00
-#SBATCH --gres=gpu:tesla_v100:1
+#SBATCH --gres=gpu:2
 #SBATCH --output=sptrsv.out
 
 ################################################################################

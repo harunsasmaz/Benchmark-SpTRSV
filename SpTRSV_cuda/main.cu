@@ -6,6 +6,7 @@
 
 #include "sptrsv_syncfree_serialref.h"
 #include "sptrsv_syncfree_cuda.h"
+#include "sptrsv_zerocopy_cuda.h"
 
 int main(int argc, char ** argv)
 {
