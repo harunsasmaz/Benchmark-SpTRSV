@@ -28,45 +28,64 @@ void sptrsv_zerocopy_cuda_executor(const int* __restrict__        d_cscColPtr,
                                          int*                     d_in_degree,
                                          VALUE_TYPE*              d_left_sum,
                                    const int                      n,
+                                   const int                      n_all,
                                    const int                      displs,
                                    const int                      e_displs,
+                                   const int                      substitution,
                                    const VALUE_TYPE* __restrict__ d_b,
                                          VALUE_TYPE*              d_x,
                                          int*                     s_in_degree,
                                          VALUE_TYPE*              s_left_sum)
 {
     const int global_id = blockIdx.x * blockDim.x + threadIdx.x;
-    int global_x_id = global_id / WARP_SIZE;
-    if (global_x_id >= n) return;
+    int local_x_id = global_id / WARP_SIZE;
+    if (local_x_id >= n) return;
  
     //const int local_warp_id = threadIdx.x / WARP_SIZE;
     const int lane_id = (WARP_SIZE - 1) & threadIdx.x;
     int starting_x = displs;
+    starting_x = substitution == SUBSTITUTION_FORWARD ? 
+                  starting_x : n_all - 1 - starting_x;
+    
+    int global_x_id = local_x_id;
+    global_x_id = substitution == SUBSTITUTION_FORWARD ? 
+                    global_x_id + starting_x : starting_x - global_x_id;
 
     clock_t start;
     do {
         start = clock();
         __syncwarp();
     }
-    while (s_in_degree[global_x_id + starting_x] != d_in_degree[global_x_id] + 1);
+    while (s_in_degree[global_x_id] != d_in_degree[local_x_id] + 1);
+
+    // if(!lane_id){
+    //     int id;
+    //     cudaGetDevice(&id);
+    //     printf("device: %d\t global x id: %d\t local_x_id: %d\n", id, global_x_id, local_x_id);
+    // }
     
-    const int pos = d_cscColPtr[global_x_id];
+    const int index = substitution == SUBSTITUTION_FORWARD ? local_x_id : n - 1 - local_x_id;
+    const int pos = substitution == SUBSTITUTION_FORWARD ?
+                    d_cscColPtr[index] : d_cscColPtr[index + 1] - 1;
     const VALUE_TYPE coef = (VALUE_TYPE)1 / d_cscVal[pos - e_displs];
-    VALUE_TYPE xi = d_left_sum[global_x_id] + s_left_sum[global_x_id + starting_x];
-    xi = (d_b[global_x_id] - xi) * coef;
-    
-    //if(!lane_id) printf("global x id: %d\t +starting_x: %d\n", global_x_id, starting_x);
+    VALUE_TYPE xi = d_left_sum[local_x_id] + s_left_sum[global_x_id];
+    xi = (d_b[index] - xi) * coef;
 
-    const int start_ptr = d_cscColPtr[global_x_id] + 1;
-    const int stop_ptr  = d_cscColPtr[global_x_id + 1];
+    const int start_ptr = substitution == SUBSTITUTION_FORWARD ? 
+                          d_cscColPtr[index] + 1 : d_cscColPtr[index];
+    const int stop_ptr  = substitution == SUBSTITUTION_FORWARD ? 
+                          d_cscColPtr[index + 1] : d_cscColPtr[index + 1] - 1;
 
-    for (int j = start_ptr + lane_id; j < stop_ptr; j += WARP_SIZE)
-    {
+    for (int jj = start_ptr + lane_id; jj < stop_ptr; jj += WARP_SIZE)
+    {   
+        const int j = substitution == SUBSTITUTION_FORWARD ? jj : stop_ptr - 1 - (jj - start_ptr);
         const int rowIdx = d_cscRowIdx[j - e_displs];
-        const bool cond = (rowIdx < starting_x + n);
+        const bool cond = substitution == SUBSTITUTION_FORWARD ? 
+                    (rowIdx < starting_x + n) : (rowIdx >= displs);
 
         if (cond) {
-            const int pos = rowIdx - starting_x;
+            const int pos = substitution == SUBSTITUTION_FORWARD ? 
+                            rowIdx - starting_x : starting_x - 1 - rowIdx;
 
             atomicAdd((VALUE_TYPE *)&d_left_sum[pos], xi * d_cscVal[j - e_displs]);
             __threadfence();
@@ -79,7 +98,7 @@ void sptrsv_zerocopy_cuda_executor(const int* __restrict__        d_cscColPtr,
         }
     }
 
-    if (!lane_id) d_x[global_x_id] = xi;
+    if (!lane_id) d_x[index] = xi;
 }
 
 int sptrsv_zerocopy_cuda(const int           *cscColPtrTR,
@@ -88,6 +107,7 @@ int sptrsv_zerocopy_cuda(const int           *cscColPtrTR,
                          const int            m,
                          const int            n,
                          const int            nnzTR,
+                         const int            substitution,
                                VALUE_TYPE    *x,
                          const VALUE_TYPE    *b,
                          const VALUE_TYPE    *x_ref)
@@ -259,7 +279,7 @@ int sptrsv_zerocopy_cuda(const int           *cscColPtrTR,
             sptrsv_zerocopy_cuda_executor<<< num_blocks, num_threads >>>
                                 (d_cscColPtrTR[i], d_cscRowIdxTR[i], d_cscValTR[i],
                                     d_in_degree[i], d_left_sum[i],
-                                    colCounts[i], colDispls[i], eDispls[i], d_b[i], d_x[i], s_in_degree, s_left_sum);
+                                    colCounts[i], n, colDispls[i], eDispls[i], substitution, d_b[i], d_x[i], s_in_degree, s_left_sum);
         }
 
         for(int i = 0; i < ngpu; i++)
