@@ -5,6 +5,16 @@
 #include "utils.h"
 #include <cuda_runtime.h>
 
+#define CHECK_CUDA(func)                                                       \
+{                                                                              \
+    cudaError_t status = (func);                                               \
+    if (status != cudaSuccess) {                                               \
+        printf("CUDA API failed at line %d with error: %s (%d)\n",             \
+               __LINE__, cudaGetErrorString(status), status);                  \
+        return EXIT_FAILURE;                                                   \
+    }                                                                          \
+}
+
 __global__
 void sptrsv_zerocopy_cuda_analyser(const int   *d_cscRowIdx,
                                    const int    m,
@@ -18,7 +28,6 @@ void sptrsv_zerocopy_cuda_analyser(const int   *d_cscRowIdx,
         atomicAdd(&s_in_degree[d_cscRowIdx[global_id]], 1);
     }
 
-    //if(global_id == 0) printf("m: %d\t nnz: %d\t displs: %d\n", m, nnz, displs);
 }
 
 __global__
@@ -45,7 +54,7 @@ void sptrsv_zerocopy_cuda_executor(const int* __restrict__        d_cscColPtr,
     const int lane_id = (WARP_SIZE - 1) & threadIdx.x;
     int starting_x = displs;
     starting_x = substitution == SUBSTITUTION_FORWARD ? 
-                  starting_x : n_all - 1 - starting_x;
+                  starting_x : n - 1 + starting_x;
     
     int global_x_id = local_x_id;
     global_x_id = substitution == SUBSTITUTION_FORWARD ? 
@@ -57,12 +66,6 @@ void sptrsv_zerocopy_cuda_executor(const int* __restrict__        d_cscColPtr,
         __syncwarp();
     }
     while (s_in_degree[global_x_id] != d_in_degree[local_x_id] + 1);
-
-    // if(!lane_id){
-    //     int id;
-    //     cudaGetDevice(&id);
-    //     printf("device: %d\t global x id: %d\t local_x_id: %d\n", id, global_x_id, local_x_id);
-    // }
     
     const int index = substitution == SUBSTITUTION_FORWARD ? local_x_id : n - 1 - local_x_id;
     const int pos = substitution == SUBSTITUTION_FORWARD ?
@@ -81,20 +84,20 @@ void sptrsv_zerocopy_cuda_executor(const int* __restrict__        d_cscColPtr,
         const int j = substitution == SUBSTITUTION_FORWARD ? jj : stop_ptr - 1 - (jj - start_ptr);
         const int rowIdx = d_cscRowIdx[j - e_displs];
         const bool cond = substitution == SUBSTITUTION_FORWARD ? 
-                    (rowIdx < starting_x + n) : (rowIdx >= displs);
+                    (rowIdx < starting_x + n) : (rowIdx > starting_x - n);
 
         if (cond) {
             const int pos = substitution == SUBSTITUTION_FORWARD ? 
-                            rowIdx - starting_x : starting_x - 1 - rowIdx;
+                            rowIdx - starting_x : starting_x - rowIdx;
 
-            atomicAdd((VALUE_TYPE *)&d_left_sum[pos], xi * d_cscVal[j - e_displs]);
+            atomicAdd((VALUE_TYPE*)&d_left_sum[pos], xi * d_cscVal[j - e_displs]);
             __threadfence();
-            atomicAdd((int *)&d_in_degree[pos], 1);
+            atomicAdd((int*)&d_in_degree[pos], 1);
         }
         else {
-            atomicAdd(&s_left_sum[rowIdx], xi * d_cscVal[j - e_displs]);
+            atomicAdd((VALUE_TYPE*)&s_left_sum[rowIdx], xi * d_cscVal[j - e_displs]);
             //__threadfence();
-            atomicSub(&s_in_degree[rowIdx], 1);
+            atomicSub((int*)&s_in_degree[rowIdx], 1);
         }
     }
 
@@ -110,16 +113,14 @@ int sptrsv_zerocopy_cuda(const int           *cscColPtrTR,
                          const int            substitution,
                                VALUE_TYPE    *x,
                          const VALUE_TYPE    *b,
-                         const VALUE_TYPE    *x_ref)
+                         const VALUE_TYPE    *x_ref,
+                         const int            ngpu)
 {
     if (m != n)
     {
         printf("This is not a square matrix, return.\n");
         return -1;
     }
-
-    int ngpu = 4; 
-    //cudaGetDeviceCount(&ngpu);
     
     // calculate which GPU gets which cols
     // almost even col distribution
@@ -144,10 +145,10 @@ int sptrsv_zerocopy_cuda(const int           *cscColPtrTR,
     // initialize intermediate arrays
     VALUE_TYPE* s_left_sum;
     int *s_in_degree;
-    cudaMallocManaged((void**)&s_left_sum, n * sizeof(int));
-    cudaMallocManaged((void**)&s_in_degree, n * sizeof(int));
-    cudaMemset(s_left_sum, 0, n * sizeof(int));
-    cudaMemset(s_in_degree, 0, n * sizeof(int));
+    CHECK_CUDA( cudaMallocManaged((void**)&s_left_sum, n * sizeof(VALUE_TYPE)) )
+    CHECK_CUDA( cudaMallocManaged((void**)&s_in_degree, n * sizeof(int)) )
+    CHECK_CUDA( cudaMemset(s_left_sum, 0, n * sizeof(VALUE_TYPE)) )
+    CHECK_CUDA( cudaMemset(s_in_degree, 0, n * sizeof(int)) )
 
     // Define partial device arrays for matrix L and vectors X and B
     int *d_cscColPtrTR[ngpu];
@@ -159,38 +160,38 @@ int sptrsv_zerocopy_cuda(const int           *cscColPtrTR,
     // Allocate partial device arrays for matrix L on devices
     for(int i = 0; i < ngpu; i++)
     {
-        cudaSetDevice(i);
-        cudaMalloc((void **)&d_cscColPtrTR[i], (colCounts[i] + 1) * sizeof(int));
-        cudaMalloc((void **)&d_cscRowIdxTR[i], eCounts[i]  * sizeof(int));
-        cudaMalloc((void **)&d_cscValTR[i],    eCounts[i]  * sizeof(VALUE_TYPE));
+        CHECK_CUDA( cudaSetDevice(i) );
+        CHECK_CUDA( cudaMalloc((void **)&d_cscColPtrTR[i], (colCounts[i] + 1) * sizeof(int)) )
+        CHECK_CUDA( cudaMalloc((void **)&d_cscRowIdxTR[i], eCounts[i]  * sizeof(int)) )
+        CHECK_CUDA( cudaMalloc((void **)&d_cscValTR[i],    eCounts[i]  * sizeof(VALUE_TYPE)) )
     }
 
     // Distribute values of L from host to devices
     for(int i = 0; i < ngpu; i++)
     {   
         int pos = colDispls[i], cols = colCounts[i], e_pos = eDispls[i], elms = eCounts[i];
-        cudaSetDevice(i);
-        cudaMemcpy(d_cscColPtrTR[i], cscColPtrTR + pos, (cols + 1) * sizeof(int), cudaMemcpyHostToDevice);
-        cudaMemcpy(d_cscRowIdxTR[i], cscRowIdxTR + e_pos, elms * sizeof(int), cudaMemcpyHostToDevice);
-        cudaMemcpy(d_cscValTR[i], cscValTR + e_pos, elms * sizeof(VALUE_TYPE), cudaMemcpyHostToDevice);
+        CHECK_CUDA( cudaSetDevice(i) )
+        CHECK_CUDA( cudaMemcpy(d_cscColPtrTR[i], cscColPtrTR + pos, (cols + 1) * sizeof(int), cudaMemcpyHostToDevice) )
+        CHECK_CUDA( cudaMemcpy(d_cscRowIdxTR[i], cscRowIdxTR + e_pos, elms * sizeof(int), cudaMemcpyHostToDevice) )
+        CHECK_CUDA( cudaMemcpy(d_cscValTR[i], cscValTR + e_pos, elms * sizeof(VALUE_TYPE), cudaMemcpyHostToDevice) )
     }
 
     // Allocate and distribute vector B on devices
     for(int i = 0; i < ngpu; i++)
     {   
         int pos = colDispls[i], cols = colCounts[i];
-        cudaSetDevice(i);
-        cudaMalloc((void **)&d_b[i], cols * sizeof(VALUE_TYPE));
-        cudaMemcpy(d_b[i], b + pos, cols * sizeof(VALUE_TYPE), cudaMemcpyHostToDevice);
+        CHECK_CUDA( cudaSetDevice(i) )
+        CHECK_CUDA( cudaMalloc((void **)&d_b[i], cols * sizeof(VALUE_TYPE)) )
+        CHECK_CUDA( cudaMemcpy(d_b[i], b + pos, cols * sizeof(VALUE_TYPE), cudaMemcpyHostToDevice) )
     }
 
     // Allocate and set vector X on devices
     for(int i = 0; i < ngpu; i++)
     {   
         int cols = colCounts[i];
-        cudaSetDevice(i);
-        cudaMalloc((void **)&d_x[i], cols * sizeof(VALUE_TYPE));
-        cudaMemset(d_x[i], 0, cols * sizeof(VALUE_TYPE));
+        CHECK_CUDA( cudaSetDevice(i) )
+        CHECK_CUDA( cudaMalloc((void **)&d_x[i], cols * sizeof(VALUE_TYPE)) )
+        CHECK_CUDA( cudaMemset(d_x[i], 0, cols * sizeof(VALUE_TYPE)) )
     }
 
     //  Define device in_degree and left_sum arrays for each device
@@ -201,18 +202,18 @@ int sptrsv_zerocopy_cuda(const int           *cscColPtrTR,
     for(int i = 0; i < ngpu; i++)
     {
         int cols = colCounts[i];
-        cudaSetDevice(i);
-        cudaMalloc((void **)&d_in_degree[i], cols * sizeof(int));
-        cudaMalloc((void **)&d_left_sum[i], cols * sizeof(VALUE_TYPE));
-        cudaMemset(d_left_sum[i], 0, cols * sizeof(VALUE_TYPE));
-        cudaMemset(d_in_degree[i], 0, cols * sizeof(int));
+        CHECK_CUDA( cudaSetDevice(i) )
+        CHECK_CUDA( cudaMalloc((void **)&d_in_degree[i], cols * sizeof(int)) )
+        CHECK_CUDA( cudaMalloc((void **)&d_left_sum[i], cols * sizeof(VALUE_TYPE)) )
+        CHECK_CUDA( cudaMemset(d_left_sum[i], 0, cols * sizeof(VALUE_TYPE)) )
+        CHECK_CUDA( cudaMemset(d_in_degree[i], 0, cols * sizeof(int)) )
     }
 
     // For safety, wait until all allocations are done.
     for(int i = 0; i < ngpu; i++)
     {
-        cudaSetDevice(i);
-        cudaDeviceSynchronize();
+        CHECK_CUDA( cudaSetDevice(i) )
+        CHECK_CUDA( cudaDeviceSynchronize() )
     }
 
     //  - cuda zercopu SpTRSV analysis start!
@@ -226,10 +227,10 @@ int sptrsv_zerocopy_cuda(const int           *cscColPtrTR,
 
     for(int k = 0; k < BENCH_REPEAT; k++)
     {
-        cudaMemset(s_in_degree, 0, n * sizeof(int));
+        CHECK_CUDA( cudaMemset(s_in_degree, 0, n * sizeof(int)) )
         for(int i = 0; i < ngpu; i++)
         {
-            cudaSetDevice(i);
+            CHECK_CUDA( cudaSetDevice(i) )
             num_blocks = ceil((double)eCounts[i] / num_threads);
             sptrsv_zerocopy_cuda_analyser<<< num_blocks, num_threads >>>
                                         (d_cscRowIdxTR[i], colCounts[i], eCounts[i], eDispls[i], s_in_degree);
@@ -238,12 +239,10 @@ int sptrsv_zerocopy_cuda(const int           *cscColPtrTR,
         // For safety, wait until are devices are done with analysis.
         for(int i = 0; i < ngpu; i++)
         {
-            cudaSetDevice(i);
-            cudaDeviceSynchronize();
+            CHECK_CUDA( cudaSetDevice(i) )
+            CHECK_CUDA( cudaDeviceSynchronize() )
         }
     }
-
-
 
     gettimeofday(&t2, NULL);
     double time_cuda_analysis = (t2.tv_sec - t1.tv_sec) * 1000.0 + (t2.tv_usec - t1.tv_usec) / 1000.0;
@@ -259,23 +258,23 @@ int sptrsv_zerocopy_cuda(const int           *cscColPtrTR,
 
     // For benchmarking, backup intermediate in degree array
     int *s_in_degree_backup;
-    cudaMallocManaged((void**)&s_in_degree_backup, n * sizeof(int));
+    CHECK_CUDA( cudaMallocManaged((void**)&s_in_degree_backup, n * sizeof(int)) )
     memcpy(s_in_degree_backup, s_in_degree, n * sizeof(int));
 
     for(int k = 0; k < BENCH_REPEAT; k++)
     {
-        gettimeofday(&t1, NULL);
-        
-        cudaMemset(s_left_sum, 0, n * sizeof(VALUE_TYPE));
+        CHECK_CUDA( cudaMemset(s_left_sum, 0, n * sizeof(VALUE_TYPE)) );
         memcpy(s_in_degree, s_in_degree_backup, n * sizeof(int));
+
+        gettimeofday(&t1, NULL);
 
         for(int i = 0; i < ngpu; i++)
         {
-            cudaSetDevice(i);
-            cudaMemset(d_x[i], 0, colCounts[i] * sizeof(VALUE_TYPE));
-            cudaMemset(d_in_degree[i], 0, colCounts[i] * sizeof(VALUE_TYPE));
-            cudaMemset(d_left_sum[i], 0, colCounts[i] * sizeof(VALUE_TYPE));
-            num_blocks = ceil((double)colCounts[i] / ((double)num_threads/WARP_SIZE));
+            CHECK_CUDA( cudaSetDevice(i) )
+            CHECK_CUDA( cudaMemset(d_x[i], 0, colCounts[i] * sizeof(VALUE_TYPE)) )
+            CHECK_CUDA( cudaMemset(d_in_degree[i], 0, colCounts[i] * sizeof(int)) )
+            CHECK_CUDA( cudaMemset(d_left_sum[i], 0, colCounts[i] * sizeof(VALUE_TYPE)) )
+            num_blocks = ceil((double)colCounts[i] / ((double)num_threads/WARP_SIZE) );
             sptrsv_zerocopy_cuda_executor<<< num_blocks, num_threads >>>
                                 (d_cscColPtrTR[i], d_cscRowIdxTR[i], d_cscValTR[i],
                                     d_in_degree[i], d_left_sum[i],
@@ -284,10 +283,10 @@ int sptrsv_zerocopy_cuda(const int           *cscColPtrTR,
 
         for(int i = 0; i < ngpu; i++)
         {
-            cudaSetDevice(i);
-            cudaDeviceSynchronize();
+            CHECK_CUDA( cudaSetDevice(i) )
+            CHECK_CUDA( cudaDeviceSynchronize() )
         }
-
+        
         gettimeofday(&t2, NULL);
         time_cuda_solve += (t2.tv_sec - t1.tv_sec) * 1000.0 + (t2.tv_usec - t1.tv_usec) / 1000.0;
 
@@ -305,15 +304,15 @@ int sptrsv_zerocopy_cuda(const int           *cscColPtrTR,
     for(int i = 0; i < ngpu; i++)
     {
         int pos = colDispls[i], cols = colCounts[i];
-        cudaSetDevice(i);
-        cudaMemcpy(x + pos, d_x[i], cols * sizeof(VALUE_TYPE), cudaMemcpyDeviceToHost);
+        CHECK_CUDA( cudaSetDevice(i) )
+        CHECK_CUDA( cudaMemcpy(x + pos, d_x[i], cols * sizeof(VALUE_TYPE), cudaMemcpyDeviceToHost) )
     }
 
     // For safety, guarantee that gathering is done.
     for(int i = 0; i < ngpu; i++)
     {
-        cudaSetDevice(i);
-        cudaDeviceSynchronize();
+        CHECK_CUDA( cudaSetDevice(i) )
+        CHECK_CUDA( cudaDeviceSynchronize() )
     }
 
     // validate x

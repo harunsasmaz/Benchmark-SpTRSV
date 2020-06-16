@@ -337,7 +337,7 @@ int main(int argc, char ** argv)
     // run serial syncfree SpTRSV as a reference
     printf("---------------------------------------------------------------------------------------------\n");
     sptrsv_syncfree_serialref(cscColPtrTR, cscRowIdxTR, cscValTR, m, n, nnzTR,
-                              substitution, rhs, x, b, x_ref);
+                             substitution, rhs, x, b, x_ref);
 
     // set device
     cudaSetDevice(device_id);
@@ -352,16 +352,37 @@ int main(int argc, char ** argv)
     printf("---------------------------------------------------------------------------------------------\n");
     double gflops_autotuned = 0;
     sptrsv_syncfree_cuda(cscColPtrTR, cscRowIdxTR, cscValTR, m, n, nnzTR,
-                         substitution, rhs, OPT_WARP_AUTO, x, b, x_ref, &gflops_autotuned);
+                        substitution, rhs, OPT_WARP_AUTO, x, b, x_ref, &gflops_autotuned);
 
     printf("---------------------------------------------------------------------------------------------\n");
+
+    memset(x, 0, n * sizeof(VALUE_TYPE));
 
     printf("---------------------------------------------------------------------------------------------\n");
   
-    sptrsv_zerocopy_cuda(cscColPtrTR, cscRowIdxTR, cscValTR, m, n, nnzTR,
-                         x, b, x_ref);
+    sptrsv_zerocopy_cuda(cscColPtrTR, cscRowIdxTR, cscValTR, m, n, nnzTR, substitution,
+                        x, b, x_ref, 2);
 
     printf("---------------------------------------------------------------------------------------------\n");
+    
+    memset(x, 0, n * sizeof(VALUE_TYPE));
+
+    printf("---------------------------------------------------------------------------------------------\n");
+  
+    sptrsv_zerocopy_cuda(cscColPtrTR, cscRowIdxTR, cscValTR, m, n, nnzTR, substitution,
+                         x, b, x_ref, 3);
+
+    printf("---------------------------------------------------------------------------------------------\n");
+
+    memset(x, 0, n * sizeof(VALUE_TYPE));
+
+    printf("---------------------------------------------------------------------------------------------\n");
+  
+    sptrsv_zerocopy_cuda(cscColPtrTR, cscRowIdxTR, cscValTR, m, n, nnzTR, substitution,
+                         x, b, x_ref, 4);
+
+    printf("---------------------------------------------------------------------------------------------\n");
+
 
     // done!
     free(cscRowIdxTR);
