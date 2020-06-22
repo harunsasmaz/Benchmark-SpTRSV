@@ -8,4 +8,5 @@
 ## Compile and Run
 
   - make
-  - ./sptrsv -d 0 -rhs 1 -forward -p 0 -mtx <matrix> // -p 0 for equal column, 1 for equal nnz
+  - ./sptrsv -d 0 -rhs 1 -forward -p 0 -mtx <matrix> 
+    - <-p> 0 for equal column, 1 for equal nnz
