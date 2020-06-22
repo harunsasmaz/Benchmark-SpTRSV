@@ -15,6 +15,71 @@
     }                                                                          \
 }
 
+void equal_col_partition(int ngpu, int cols, int* counts, int* displs)
+{
+    printf("Partitioning matrix by cols...!\n");
+
+    int colCount = round((double)cols / ngpu);
+    for(int i = 0; i < ngpu - 1; i++)
+    {
+        counts[i] = colCount;
+        displs[i] = i * colCount;
+    }
+    counts[ngpu - 1] = cols - (ngpu - 1) * colCount;
+    displs[ngpu - 1] = (ngpu - 1) * colCount;
+}
+
+void equal_nnz_partition(int ngpu, int ncols, int nnz, const int* cols, int* counts, int* displs)
+{   
+    printf("Partitioning matrix by nnz...!\n");
+    // count nnz for each row.
+    int* col_elements = (int*)malloc(sizeof(int) * ncols);
+    for(int i = 0; i < ncols; i++){
+        col_elements[i] = cols[i + 1] - cols[i];
+    }
+
+    // first find a lower bound nnz for processes
+    // by applying binary search.
+    int low = 0, high = nnz;
+    while(low < high)
+    {   
+        // the range of searching
+        int mid = (low + high) / 2;
+
+        // calculate how many process are needed so that each
+        // process receives up to nnz elements 
+        int sum = 0, need = 0;
+        for(int i = 0; i < ncols; i++){
+            if (sum + col_elements[i] > mid) {
+                sum = col_elements[i];
+                need++;
+            } else {
+                sum += col_elements[i];
+            }
+        }
+
+        // update the searching range.
+        if (need < ngpu)
+            high = mid;
+        else
+            low = mid + 1;
+    }
+
+    // split rows by processes according to lower bound.
+    int sum = 0, counter = 0;
+    for(int i = 0; i < ncols; i++){
+        if(sum + col_elements[i] > low){
+            sum = col_elements[i];
+            counter++;
+            counts[counter] = 1;
+            displs[counter] = i;
+        } else {
+            sum += col_elements[i];
+            counts[counter]++;
+        }
+    }
+}
+
 __global__
 void sptrsv_zerocopy_cuda_analyser(const int   *d_cscRowIdx,
                                    const int    m,
@@ -44,20 +109,20 @@ void sptrsv_zerocopy_cuda_executor(const int* __restrict__        d_cscColPtr,
                                          VALUE_TYPE*              d_x,
                                          int*                     s_in_degree,
                                          VALUE_TYPE*              s_left_sum)
-{
+{    
     const int global_id = blockIdx.x * blockDim.x + threadIdx.x;
-    int local_x_id = global_id / WARP_SIZE;
+    int local_x_id = global_id / WARP_SIZE;             // calculate which warp gets which component of x
     if (local_x_id >= n) return;
  
-    const int lane_id = (WARP_SIZE - 1) & threadIdx.x;
-    int starting_x = displs;
+    const int lane_id = (WARP_SIZE - 1) & threadIdx.x;  // lane id of a thread in a warp.
+    int starting_x = displs;                            // starting index of each device.
     starting_x = substitution == SUBSTITUTION_FORWARD ? 
                   starting_x : n - 1 + starting_x;
     
-    int global_x_id = local_x_id;
+    int global_x_id = local_x_id;                       // global index of x component among all devices.
     global_x_id = substitution == SUBSTITUTION_FORWARD ? 
                     global_x_id + starting_x : starting_x - global_x_id;
-
+    
     clock_t start;
     do {
         start = clock();
@@ -65,6 +130,7 @@ void sptrsv_zerocopy_cuda_executor(const int* __restrict__        d_cscColPtr,
     }
     while (s_in_degree[global_x_id] != d_in_degree[local_x_id] + 1);
     
+    // calculate related component of x, each warp gets one component.
     const int index = substitution == SUBSTITUTION_FORWARD ? local_x_id : n - 1 - local_x_id;
     const int pos = substitution == SUBSTITUTION_FORWARD ?
                     d_cscColPtr[index] : d_cscColPtr[index + 1] - 1;
@@ -72,11 +138,13 @@ void sptrsv_zerocopy_cuda_executor(const int* __restrict__        d_cscColPtr,
     VALUE_TYPE xi = d_left_sum[local_x_id] + s_left_sum[global_x_id];
     xi = (d_b[index] - xi) * coef;
 
-    const int start_ptr = substitution == SUBSTITUTION_FORWARD ? 
+    // start and stop index for a single column and hence a warp.
+    const int start_ptr = substitution == SUBSTITUTION_FORWARD ?    
                           d_cscColPtr[index] + 1 : d_cscColPtr[index];
     const int stop_ptr  = substitution == SUBSTITUTION_FORWARD ? 
                           d_cscColPtr[index + 1] : d_cscColPtr[index + 1] - 1;
 
+    // iterate through all elements in a column and update left_sum and in_degree.
     for (int jj = start_ptr + lane_id; jj < stop_ptr; jj += WARP_SIZE)
     {   
         const int j = substitution == SUBSTITUTION_FORWARD ? jj : stop_ptr - 1 - (jj - start_ptr);
@@ -98,7 +166,8 @@ void sptrsv_zerocopy_cuda_executor(const int* __restrict__        d_cscColPtr,
             atomicSub((int*)&s_in_degree[rowIdx], 1);
         }
     }
-
+    
+    // store calculated x component in resulting x vector.
     if (!lane_id) d_x[index] = xi;
 }
 
@@ -109,6 +178,7 @@ int sptrsv_zerocopy_cuda(const int           *cscColPtrTR,
                          const int            n,
                          const int            nnzTR,
                          const int            substitution,
+                         const int            partition,
                                VALUE_TYPE    *x,
                          const VALUE_TYPE    *b,
                          const VALUE_TYPE    *x_ref,
@@ -121,17 +191,18 @@ int sptrsv_zerocopy_cuda(const int           *cscColPtrTR,
     }
     
     // calculate which GPU gets which cols
-    // almost even col distribution
     int colCounts[ngpu], colDispls[ngpu];
-    int colCount = round((double)n / ngpu);
-    for(int i = 0; i < ngpu - 1; i++)
-    {
-        colCounts[i] = colCount;
-        colDispls[i] = i * colCount;
+    colDispls[0] = 0;
+    colCounts[0] = 0;
+    if(partition == COL_PARTITION)
+        equal_col_partition(ngpu, n, colCounts, colDispls);
+    else if(partition == NNZ_PARTITION)
+        equal_nnz_partition(ngpu, n, nnzTR, cscColPtrTR, colCounts, colDispls);
+    else {
+        printf("Unknown partition of matrix\n");
+        return EXIT_FAILURE;
     }
-    colCounts[ngpu - 1] = n - (ngpu - 1) * colCount;
-    colDispls[ngpu - 1] = (ngpu - 1) * colCount;
-
+        
     // calculate which GPU gets how many nnz
     int eCounts[ngpu], eDispls[ngpu];
     for(int i = 0; i < ngpu; i++)
@@ -254,7 +325,7 @@ int sptrsv_zerocopy_cuda(const int           *cscColPtrTR,
     num_threads = WARP_PER_BLOCK * WARP_SIZE;
     double time_cuda_solve = 0;
 
-    // For benchmarking, backup intermediate in degree array
+    // For benchmarking, backup intermediate in_degree array
     int *s_in_degree_backup;
     CHECK_CUDA( cudaMallocManaged((void**)&s_in_degree_backup, n * sizeof(int)) )
     memcpy(s_in_degree_backup, s_in_degree, n * sizeof(int));
@@ -265,6 +336,7 @@ int sptrsv_zerocopy_cuda(const int           *cscColPtrTR,
         CHECK_CUDA( cudaMemset(s_left_sum, 0, n * sizeof(VALUE_TYPE)) );
         memcpy(s_in_degree, s_in_degree_backup, n * sizeof(int));
 
+        //reset device arrays for the iteration.
         for(int i = 0; i < ngpu; i++)
         {
             CHECK_CUDA( cudaSetDevice(i) )
