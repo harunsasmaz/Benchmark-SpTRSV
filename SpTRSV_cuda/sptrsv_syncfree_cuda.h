@@ -451,7 +451,7 @@ int sptrsv_syncfree_cuda(const int           *cscColPtrTR,
     cudaMemset(d_x, 0, n * rhs * sizeof(VALUE_TYPE));
 
     //  - cuda syncfree SpTRSV analysis start!
-    printf(" - cuda syncfree SpTRSV analysis start!\n");
+    //printf(" - cuda syncfree SpTRSV analysis start!\n");
 
     struct timeval t1, t2;
     gettimeofday(&t1, NULL);
@@ -483,7 +483,7 @@ int sptrsv_syncfree_cuda(const int           *cscColPtrTR,
     printf("cuda syncfree SpTRSV analysis on L used %4.2f ms\n", time_cuda_analysis);
 
     //  - cuda syncfree SpTRSV solve start!
-    printf(" - cuda syncfree SpTRSV solve start!\n");
+    //printf(" - cuda syncfree SpTRSV solve start!\n");
 
     // malloc tmp memory to collect a partial sum of each row
     VALUE_TYPE *d_left_sum;

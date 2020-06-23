@@ -1,5 +1,5 @@
-#ifndef _SPTRSV_ZEROCOPY_CUDA_
-#define _SPTRSV_ZEROCOPY_CUDA_
+#ifndef _UNIFIED_AND_SHARED_
+#define _UNIFIED_AND_SHARED_
 
 #include "common.h"
 #include "utils.h"
@@ -16,7 +16,7 @@
 }
 
 __global__
-void sptrsv_zerocopy_cuda_analyser(const int   *d_cscRowIdx,
+void unified_and_shared_analyser(const int   *d_cscRowIdx,
                                    const int    m,
                                    const int    nnz,
                                    const int    displs,
@@ -31,7 +31,7 @@ void sptrsv_zerocopy_cuda_analyser(const int   *d_cscRowIdx,
 }
 
 __global__
-void sptrsv_zerocopy_cuda_executor(const int* __restrict__        d_cscColPtr,
+void unified_and_shared_executor(const int* __restrict__        d_cscColPtr,
                                    const int* __restrict__        d_cscRowIdx,
                                    const VALUE_TYPE* __restrict__ d_cscVal,
                                          int*                     d_in_degree,
@@ -45,68 +45,65 @@ void sptrsv_zerocopy_cuda_executor(const int* __restrict__        d_cscColPtr,
                                          int*                     s_in_degree,
                                          VALUE_TYPE*              s_left_sum)
 {    
-    const int global_id = blockIdx.x * blockDim.x + threadIdx.x;
-    int local_x_id = global_id / WARP_SIZE;             // calculate which warp gets which component of x
-    if (local_x_id >= n) return;
- 
-    const int lane_id = (WARP_SIZE - 1) & threadIdx.x;  // lane id of a thread in a warp.
-    int starting_x = displs;                            // starting index of each device.
-    starting_x = substitution == SUBSTITUTION_FORWARD ? 
-                  starting_x : n - 1 + starting_x;
-    
-    int global_x_id = local_x_id;                       // global index of x component among all devices.
-    global_x_id = substitution == SUBSTITUTION_FORWARD ? 
-                    global_x_id + starting_x : starting_x - global_x_id;
+    int global_id = blockIdx.x * blockDim.x + threadIdx.x;
+    int global_x_id = global_id / WARP_SIZE;
+    if(global_x_id >= n) return;
+
+    volatile __shared__ int x_in_degree[WARP_PER_BLOCK];
+    volatile __shared__ VALUE_TYPE x_left_sum[WARP_PER_BLOCK];
+
+    const int local_warp_id = threadIdx.x / WARP_SIZE;
+    const int lane_id = (WARP_SIZE - 1) & threadIdx.x;
+    int starting_x = (global_id / (WARP_PER_BLOCK * WARP_SIZE)) * WARP_PER_BLOCK;
+
+    const int pos = d_cscColPtr[global_x_id];
+    const VALUE_TYPE coef = (VALUE_TYPE)1 / d_cscVal[pos - e_displs];
+
+    if(threadIdx.x < WARP_PER_BLOCK)
+    {
+        x_in_degree[threadIdx.x] = 1;
+        x_left_sum[threadIdx.x] = 0;
+    }
+    __syncthreads();
     
     clock_t start;
-    do {
+    do
+    {
         start = clock();
         __syncwarp();
     }
-    while (s_in_degree[global_x_id] != d_in_degree[local_x_id] + 1);
-    
-    // calculate related component of x, each warp gets one component.
-    const int index = substitution == SUBSTITUTION_FORWARD ? local_x_id : n - 1 - local_x_id;
-    const int pos = substitution == SUBSTITUTION_FORWARD ?
-                    d_cscColPtr[index] : d_cscColPtr[index + 1] - 1;
-    const VALUE_TYPE coef = (VALUE_TYPE)1 / d_cscVal[pos - e_displs];
-    VALUE_TYPE xi = d_left_sum[local_x_id] + s_left_sum[global_x_id];
-    xi = (d_b[index] - xi) * coef;
+    while(x_in_degree[local_warp_id] != s_in_degree[global_x_id + displs]);
 
-    // start and stop index for a single column and hence a warp.
-    const int start_ptr = substitution == SUBSTITUTION_FORWARD ?    
-                          d_cscColPtr[index] + 1 : d_cscColPtr[index];
-    const int stop_ptr  = substitution == SUBSTITUTION_FORWARD ? 
-                          d_cscColPtr[index + 1] : d_cscColPtr[index + 1] - 1;
+    VALUE_TYPE xi = s_left_sum[global_x_id + displs] + x_left_sum[local_warp_id];
+    xi = (d_b[global_x_id] - xi) * coef;
 
-    // iterate through all elements in a column and update left_sum and in_degree.
-    for (int jj = start_ptr + lane_id; jj < stop_ptr; jj += WARP_SIZE)
-    {   
-        const int j = substitution == SUBSTITUTION_FORWARD ? jj : stop_ptr - 1 - (jj - start_ptr);
-        const int rowIdx = d_cscRowIdx[j - e_displs];
-        const bool cond = substitution == SUBSTITUTION_FORWARD ? 
-                    (rowIdx < starting_x + n) : (rowIdx > starting_x - n);
+    const int start_ptr = d_cscColPtr[global_x_id] + 1;
+    const int stop_ptr  = d_cscColPtr[global_x_id + 1];
 
-        if (cond) {
-            const int pos = substitution == SUBSTITUTION_FORWARD ? 
-                            rowIdx - starting_x : starting_x - rowIdx;
+    for(int j = start_ptr + lane_id; j < stop_ptr; j += WARP_SIZE)
+    {
+        const int row = d_cscRowIdx[j - e_displs];
+        const bool cond = row < starting_x + WARP_PER_BLOCK;
 
-            atomicAdd((VALUE_TYPE*)&d_left_sum[pos], xi * d_cscVal[j - e_displs]);
+        if(cond)
+        {   
+            const int index = row - starting_x;
+            atomicAdd((VALUE_TYPE *)&x_left_sum[index], xi * d_cscVal[j - e_displs]);
+            __threadfence_block();
+            atomicAdd((int *)&x_in_degree[index], 1);
+
+        } else {
+            atomicAdd(&s_left_sum[row], xi * d_cscVal[j - e_displs]);
             __threadfence();
-            atomicAdd((int*)&d_in_degree[pos], 1);
-        }
-        else {
-            atomicAdd((VALUE_TYPE*)&s_left_sum[rowIdx], xi * d_cscVal[j - e_displs]);
-            __threadfence();
-            atomicSub((int*)&s_in_degree[rowIdx], 1);
+            atomicSub(&s_in_degree[row], 1);
         }
     }
-    
-    // store calculated x component in resulting x vector.
-    if (!lane_id) d_x[index] = xi;
+
+    if(!lane_id) d_x[global_x_id] = xi;
+
 }
 
-int sptrsv_zerocopy_cuda(const int           *cscColPtrTR,
+int unified_and_shared(const int           *cscColPtrTR,
                          const int           *cscRowIdxTR,
                          const VALUE_TYPE    *cscValTR,
                          const int            m,
@@ -221,7 +218,7 @@ int sptrsv_zerocopy_cuda(const int           *cscColPtrTR,
     }
 
     //  - cuda zercopu SpTRSV analysis start!
-    //printf(" - cuda zerocopy SpTRSV analysis start!\n");
+    //printf(" - unified+shared SpTRSV analysis start!\n");
 
     struct timeval t1, t2;
     gettimeofday(&t1, NULL);
@@ -236,7 +233,7 @@ int sptrsv_zerocopy_cuda(const int           *cscColPtrTR,
         {
             CHECK_CUDA( cudaSetDevice(i) )
             num_blocks = ceil((double)eCounts[i] / num_threads);
-            sptrsv_zerocopy_cuda_analyser<<< num_blocks, num_threads >>>
+            unified_and_shared_analyser<<< num_blocks, num_threads >>>
                                         (d_cscRowIdxTR[i], colCounts[i], eCounts[i], eDispls[i], s_in_degree);
         }
 
@@ -252,10 +249,10 @@ int sptrsv_zerocopy_cuda(const int           *cscColPtrTR,
     double time_cuda_analysis = (t2.tv_sec - t1.tv_sec) * 1000.0 + (t2.tv_usec - t1.tv_usec) / 1000.0;
     time_cuda_analysis /= BENCH_REPEAT;
 
-    printf("cuda zerocopy SpTRSV analysis on L used %4.2f ms\n", time_cuda_analysis);
+    printf("unified+shared SpTRSV analysis on L used %4.2f ms\n", time_cuda_analysis);
 
     //  - cuda syncfree SpTRSV solve start!
-    //printf(" - cuda zerocopy SpTRSV solve start!\n");
+    //printf(" - unified+shared SpTRSV solve start!\n");
 
     num_threads = WARP_PER_BLOCK * WARP_SIZE;
     double time_cuda_solve = 0;
@@ -286,7 +283,7 @@ int sptrsv_zerocopy_cuda(const int           *cscColPtrTR,
         {
             cudaSetDevice(i);
             num_blocks = ceil((double)colCounts[i] / ((double)num_threads/WARP_SIZE) );
-            sptrsv_zerocopy_cuda_executor<<< num_blocks, num_threads >>>
+            unified_and_shared_executor<<< num_blocks, num_threads >>>
                                 (d_cscColPtrTR[i], d_cscRowIdxTR[i], d_cscValTR[i],
                                     d_in_degree[i], d_left_sum[i], colCounts[i], colDispls[i], 
                                         eDispls[i], substitution, d_b[i], d_x[i], s_in_degree, s_left_sum);
@@ -305,7 +302,7 @@ int sptrsv_zerocopy_cuda(const int           *cscColPtrTR,
     time_cuda_solve /= BENCH_REPEAT;
     double flop = 2*(double)nnzTR;
 
-    printf("cuda zerocopy SpTRSV solve used %4.2f ms, throughput is %4.2f gflops\n",
+    printf("unified+shared SpTRSV solve used %4.2f ms, throughput is %4.2f gflops\n",
            time_cuda_solve, flop/(1e6*time_cuda_solve));
 
     // Gather partial device x vectors on host
@@ -329,9 +326,9 @@ int sptrsv_zerocopy_cuda(const int           *cscColPtrTR,
     res = ref == 0 ? res : res / ref;
 
     if (res < accuracy)
-        printf("cuda zerocopy SpTRSV executor passed! |x-xref|/|xref| = %8.2e\n", res);
+        printf("unified+shared SpTRSV executor passed! |x-xref|/|xref| = %8.2e\n", res);
     else
-        printf("cuda zerocopy SpTRSV executor _NOT_ passed! |x-xref|/|xref| = %8.2e\n", res);
+        printf("unified+shared SpTRSV executor _NOT_ passed! |x-xref|/|xref| = %8.2e\n", res);
 
     for(int i = 0; i < ngpu; i++)
     {   

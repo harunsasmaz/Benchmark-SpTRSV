@@ -28,3 +28,6 @@
 #define OPT_WARP_NNZ   1
 #define OPT_WARP_RHS   2
 #define OPT_WARP_AUTO  3
+
+#define COL_PARTITION 0
+#define NNZ_PARTITION 1

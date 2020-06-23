@@ -4,6 +4,71 @@
 #include "common.h"
 #include "cusparse.h"
 
+void equal_col_partition(int ngpu, int cols, int* counts, int* displs)
+{
+    printf("Partitioning matrix by cols...!\n");
+
+    int colCount = round((double)cols / ngpu);
+    for(int i = 0; i < ngpu - 1; i++)
+    {
+        counts[i] = colCount;
+        displs[i] = i * colCount;
+    }
+    counts[ngpu - 1] = cols - (ngpu - 1) * colCount;
+    displs[ngpu - 1] = (ngpu - 1) * colCount;
+}
+
+void equal_nnz_partition(int ngpu, int ncols, int nnz, const int* cols, int* counts, int* displs)
+{   
+    printf("Partitioning matrix by nnz...!\n");
+    // count nnz for each row.
+    int* col_elements = (int*)malloc(sizeof(int) * ncols);
+    for(int i = 0; i < ncols; i++){
+        col_elements[i] = cols[i + 1] - cols[i];
+    }
+
+    // first find a lower bound nnz for processes
+    // by applying binary search.
+    int low = 0, high = nnz;
+    while(low < high)
+    {   
+        // the range of searching
+        int mid = (low + high) / 2;
+
+        // calculate how many process are needed so that each
+        // process receives up to nnz elements 
+        int sum = 0, need = 0;
+        for(int i = 0; i < ncols; i++){
+            if (sum + col_elements[i] > mid) {
+                sum = col_elements[i];
+                need++;
+            } else {
+                sum += col_elements[i];
+            }
+        }
+
+        // update the searching range.
+        if (need < ngpu)
+            high = mid;
+        else
+            low = mid + 1;
+    }
+
+    // split rows by processes according to lower bound.
+    int sum = 0, counter = 0;
+    for(int i = 0; i < ncols; i++){
+        if(sum + col_elements[i] > low){
+            sum = col_elements[i];
+            counter++;
+            counts[counter] = 1;
+            displs[counter] = i;
+        } else {
+            sum += col_elements[i];
+            counts[counter]++;
+        }
+    }
+}
+
 // print 1D array
 template<typename T>
 void print_1darray(T *input, int length)
