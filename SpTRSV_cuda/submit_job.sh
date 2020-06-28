@@ -28,37 +28,37 @@ echo
 echo "EQUAL COLUMN PARTITION"
 echo
 
-echo
-./sptrsv -d 0 -rhs 1 -forward -p 0 -mtx ../Cube_Coup_dt6/Cube_Coup_dt6.mtx
+# echo
+# ./sptrsv -d 0 -rhs 1 -forward -p 0 -mtx ../Cube_Coup_dt6/Cube_Coup_dt6.mtx
 
-echo
-./sptrsv -d 0 -rhs 1 -forward -p 0 -mtx ../Flan_1565/Flan_1565.mtx
+# echo
+# ./sptrsv -d 0 -rhs 1 -forward -p 0 -mtx ../Flan_1565/Flan_1565.mtx
 
-echo
-./sptrsv -d 0 -rhs 1 -forward -p 0 -mtx ../af_shell10/af_shell10.mtx
+# echo
+# ./sptrsv -d 0 -rhs 1 -forward -p 0 -mtx ../af_shell10/af_shell10.mtx
 
-echo
-./sptrsv -d 0 -rhs 1 -forward -p 0 -mtx ../G3_circuit/G3_circuit.mtx
+# echo
+# ./sptrsv -d 0 -rhs 1 -forward -p 0 -mtx ../G3_circuit/G3_circuit.mtx
 
-echo
-./sptrsv -d 0 -rhs 1 -forward -p 0 -mtx ../memchip/memchip.mtx
+# echo
+# ./sptrsv -d 0 -rhs 1 -forward -p 0 -mtx ../memchip/memchip.mtx
 
-echo
-./sptrsv -d 0 -rhs 1 -forward -p 0 -mtx ../nlpkkt120/nlpkkt120.mtx
+# echo
+# ./sptrsv -d 0 -rhs 1 -forward -p 0 -mtx ../nlpkkt120/nlpkkt120.mtx
 
-echo
-./sptrsv -d 0 -rhs 1 -forward -p 0 -mtx ../nlpkkt160/nlpkkt160.mtx
+# echo
+# ./sptrsv -d 0 -rhs 1 -forward -p 0 -mtx ../nlpkkt160/nlpkkt160.mtx
 
-echo
-./sptrsv -d 0 -rhs 1 -forward -p 0 -mtx ../nlpkkt200/nlpkkt200.mtx
+# echo
+# ./sptrsv -d 0 -rhs 1 -forward -p 0 -mtx ../nlpkkt200/nlpkkt200.mtx
 
-echo
-./sptrsv -d 0 -rhs 1 -forward -p 0 -mtx ../nlpkkt240/nlpkkt240.mtx
+# echo
+# ./sptrsv -d 0 -rhs 1 -forward -p 0 -mtx ../nlpkkt240/nlpkkt240.mtx
 
-echo
-./sptrsv -d 0 -rhs 1 -forward -p 0 -mtx ../cage15/cage15.mtx
+# echo
+# ./sptrsv -d 0 -rhs 1 -forward -p 0 -mtx ../cage15/cage15.mtx
 
-echo
+# echo
 #./sptrsv -d 0 -rhs 1 -forward -p 0 -mtx ../circuit5N_dc/circuit5N_dc.mtx
 
 
@@ -66,20 +66,20 @@ echo
 echo "EQUAL NNZ PARTITION"
 echo
 
-echo
-./sptrsv -d 0 -rhs 1 -forward -p 1 -mtx ../Cube_Coup_dt6/Cube_Coup_dt6.mtx
+# echo
+# ./sptrsv -d 0 -rhs 1 -forward -p 1 -mtx ../Cube_Coup_dt6/Cube_Coup_dt6.mtx
 
-echo
-./sptrsv -d 0 -rhs 1 -forward -p 1 -mtx ../Flan_1565/Flan_1565.mtx
+# echo
+# ./sptrsv -d 0 -rhs 1 -forward -p 1 -mtx ../Flan_1565/Flan_1565.mtx
 
-echo
-./sptrsv -d 0 -rhs 1 -forward -p 1 -mtx ../af_shell10/af_shell10.mtx
+# echo
+# ./sptrsv -d 0 -rhs 1 -forward -p 1 -mtx ../af_shell10/af_shell10.mtx
 
-echo
-./sptrsv -d 0 -rhs 1 -forward -p 1 -mtx ../G3_circuit/G3_circuit.mtx
+# echo
+# ./sptrsv -d 0 -rhs 1 -forward -p 1 -mtx ../G3_circuit/G3_circuit.mtx
 
-echo
-./sptrsv -d 0 -rhs 1 -forward -p 1 -mtx ../memchip/memchip.mtx
+# echo
+# ./sptrsv -d 0 -rhs 1 -forward -p 1 -mtx ../memchip/memchip.mtx
 
 echo
 ./sptrsv -d 0 -rhs 1 -forward -p 1 -mtx ../nlpkkt120/nlpkkt120.mtx
@@ -93,8 +93,8 @@ echo
 echo
 ./sptrsv -d 0 -rhs 1 -forward -p 1 -mtx ../nlpkkt240/nlpkkt240.mtx
 
-echo
-./sptrsv -d 0 -rhs 1 -forward -p 1 -mtx ../cage15/cage15.mtx
+# echo
+# ./sptrsv -d 0 -rhs 1 -forward -p 1 -mtx ../cage15/cage15.mtx
 
 # echo
 # #./sptrsv -d 0 -rhs 1 -forward -p 1 -mtx ../circuit5N_dc/circuit5N_dc.mtx

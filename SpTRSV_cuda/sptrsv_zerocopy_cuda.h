@@ -248,6 +248,11 @@ int sptrsv_zerocopy_cuda(const int           *cscColPtrTR,
         }
     }
 
+    for(int i = 0; i < n; ++i)
+    {
+        printf("%d\n", s_in_degree[i]);
+    }
+
     gettimeofday(&t2, NULL);
     double time_cuda_analysis = (t2.tv_sec - t1.tv_sec) * 1000.0 + (t2.tv_usec - t1.tv_usec) / 1000.0;
     time_cuda_analysis /= BENCH_REPEAT;

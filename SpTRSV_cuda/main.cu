@@ -9,6 +9,7 @@
 #include "sptrsv_zerocopy_cuda.h"
 #include "unified_and_shared.h"
 #include "unified_and_shared_2.h"
+#include "round_robin.h"
 
 int main(int argc, char ** argv)
 {
@@ -371,7 +372,13 @@ int main(int argc, char ** argv)
 
     // run cuda syncfree SpTRSV or SpTRSM
 
-    printf("---------------------------------------------------------------------------------------------\n");
+    round_robin(cscColPtrTR, cscRowIdxTR, cscValTR, m, n, nnzTR, substitution, partition,
+            x, b, x_ref, 2);
+
+    // round_robin(cscColPtrTR, cscRowIdxTR, cscValTR, m, n, nnzTR, substitution, partition,
+    //         x, b, x_ref, 2);
+
+    /* printf("---------------------------------------------------------------------------------------------\n");
     double gflops_autotuned = 0;
     sptrsv_syncfree_cuda(cscColPtrTR, cscRowIdxTR, cscValTR, m, n, nnzTR,
                        substitution, rhs, OPT_WARP_AUTO, x, b, x_ref, &gflops_autotuned);
@@ -461,7 +468,8 @@ int main(int argc, char ** argv)
                          x, b, x_ref, 4);
 
     printf("---------------------------------------------------------------------------------------------\n");
-
+    */
+    
 
     // done!
     free(cscRowIdxTR);

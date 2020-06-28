@@ -6,8 +6,6 @@
 
 void equal_col_partition(int ngpu, int cols, int* counts, int* displs)
 {
-    printf("Partitioning matrix by cols...!\n");
-
     int colCount = round((double)cols / ngpu);
     for(int i = 0; i < ngpu - 1; i++)
     {
@@ -20,8 +18,7 @@ void equal_col_partition(int ngpu, int cols, int* counts, int* displs)
 
 void equal_nnz_partition(int ngpu, int ncols, int nnz, const int* cols, int* counts, int* displs)
 {   
-    printf("Partitioning matrix by nnz...!\n");
-    // count nnz for each row.
+    // count nnz for each col.
     int* col_elements = (int*)malloc(sizeof(int) * ncols);
     for(int i = 0; i < ncols; i++){
         col_elements[i] = cols[i + 1] - cols[i];
@@ -54,7 +51,7 @@ void equal_nnz_partition(int ngpu, int ncols, int nnz, const int* cols, int* cou
             low = mid + 1;
     }
 
-    // split rows by processes according to lower bound.
+    // split cols by processes according to lower bound.
     int sum = 0, counter = 0;
     for(int i = 0; i < ncols; i++){
         if(sum + col_elements[i] > low){
