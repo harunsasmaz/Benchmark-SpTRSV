@@ -15,10 +15,13 @@
     }                                                                          \
 }
 
-__device__
-int local_to_global(int dev_id, int index, int ngpu, int block_id, int size)
+__global__
+void printk(int* ptr, int* qtr, int n)
 {
-    return (ngpu * block_id + dev_id) * size + index;
+    for(int i = 0; i < n; ++i)
+    {
+        printf("%d: %d -- %d\n", i, ptr[i], qtr[i]);
+    }
 }
 
 __global__
@@ -39,10 +42,9 @@ void round_robin_executor(         const int*        __restrict__ d_cscColPtr,
                                    const int*        __restrict__ d_cscRowIdx,
                                    const VALUE_TYPE* __restrict__ d_cscVal,
                                          int                      n,
-                                   const int                      ngpu,
-                                         int                      dev_id,
-                                         int*                     displs,
+                                         int*                     c_displs,
                                          int*                     e_displs,
+                                         int*                     d_displs,
                                    const VALUE_TYPE* __restrict__ d_b,
                                          VALUE_TYPE*              d_x,
                                          int*                     s_in_degree,
@@ -59,10 +61,10 @@ void round_robin_executor(         const int*        __restrict__ d_cscColPtr,
 
     const int local_warp_id = threadIdx.x / WARP_SIZE;
     const int lane_id = (WARP_SIZE - 1) & threadIdx.x;
-    int starting_x = displs[blockIdx.x];
+    int starting_x = c_displs[blockIdx.x];
 
-    const int pos = d_cscColPtr[global_x_id];
-    const VALUE_TYPE coef = (VALUE_TYPE)1 / d_cscVal[pos - e_displs[blockIdx.x]];
+    const int pos = d_cscColPtr[global_x_id] - e_displs[blockIdx.x] + d_displs[blockIdx.x];
+    const VALUE_TYPE coef = (VALUE_TYPE)1 / d_cscVal[pos];
 
     if(threadIdx.x < WARP_PER_BLOCK)
     {
@@ -87,25 +89,23 @@ void round_robin_executor(         const int*        __restrict__ d_cscColPtr,
 
     for(int j = start_ptr + lane_id; j < stop_ptr; j += WARP_SIZE)
     {
-        const int row = d_cscRowIdx[j - e_displs[blockIdx.x]];
+        const int row = d_cscRowIdx[j - e_displs[blockIdx.x] + d_displs[blockIdx.x]];
         const bool cond = row < starting_x + WARP_PER_BLOCK;
 
         if(cond)
         {   
             const int index = row - starting_x;
-            atomicAdd((VALUE_TYPE *)&x_left_sum[index], xi * d_cscVal[j - e_displs[blockIdx.x]]);
+            atomicAdd((VALUE_TYPE *)&x_left_sum[index], xi * d_cscVal[j - e_displs[blockIdx.x] + d_displs[blockIdx.x]]);
             __threadfence_block();
             atomicAdd((int *)&x_in_degree[index], 1);
-
         } else {
-            atomicAdd(&s_left_sum[row], xi * d_cscVal[j - e_displs[blockIdx.x]]);
+            atomicAdd(&s_left_sum[row], xi * d_cscVal[j - e_displs[blockIdx.x] + d_displs[blockIdx.x]]);
             __threadfence();
             atomicSub(&s_in_degree[row], 1);
         }
     }
 
     if(!lane_id) d_x[local_x_id] = xi;
-
 }
 
 int sum_elms(int elms[], int n)
@@ -137,8 +137,8 @@ int round_robin(         const int           *cscColPtrTR,
         return -1;
     }
 
-    int rr_times = ceil((double)n/WARP_PER_BLOCK);  // the number of rounds
-    int loop_count = rr_times / ngpu;               // the number of complete loops for each device
+    int rr_times = ceil((double)n/WARP_PER_BLOCK);          // the number of rounds
+    int loop_count = rr_times / ngpu;                       // the number of complete loops for each device
     int last_round = n - (rr_times - 1) * WARP_PER_BLOCK;   // last round gets the remaining cols.
     
     // Allocate displacement holder pointers
@@ -157,6 +157,7 @@ int round_robin(         const int           *cscColPtrTR,
         if(i % ngpu == 0 && i > 0) loop++;
         if(i == rr_times - 1) col = last_round;
         dev_id = i % ngpu;
+        if(loop == 0) colCounts[dev_id] = 0;
         colCounts[dev_id] += col;
         colDispls[dev_id][loop] = i * WARP_PER_BLOCK;
     }
@@ -193,40 +194,47 @@ int round_robin(         const int           *cscColPtrTR,
         int offset = rr_times/ngpu + 1;
         CHECK_CUDA( cudaSetDevice(i) )
         CHECK_CUDA( cudaMalloc((void **)&d_cscColPtrTR[i], (colCounts[i] + offset) * sizeof(int)) )
-        CHECK_CUDA( cudaMalloc((void **)&d_cscRowIdxTR[i], sum_elms(eCounts[i], loop_count)  * sizeof(int)) )
-        CHECK_CUDA( cudaMalloc((void **)&d_cscValTR[i],    sum_elms(eCounts[i], loop_count)   * sizeof(VALUE_TYPE)) )
-        CHECK_CUDA( cudaMalloc((void **)&d_b[i], colCounts[i] * sizeof(VALUE_TYPE)) )
+        CHECK_CUDA( cudaMalloc((void **)&d_cscRowIdxTR[i], sum_elms(eCounts[i], loop_count) * sizeof(int)) )
+        CHECK_CUDA( cudaMalloc((void **)&d_cscValTR[i],    sum_elms(eCounts[i], loop_count) * sizeof(VALUE_TYPE)) )
+        CHECK_CUDA( cudaMalloc((void **)&d_b[i],           colCounts[i] * sizeof(VALUE_TYPE)) )
     }
 
     // Distribute values of matrix L and vector B from host to devices
-    int pos, e_count, e_start;
+    int total_e[ngpu], e_count, e_start;
     col = WARP_PER_BLOCK; dev_id = 0; loop = 0;
-    int e_pos[ngpu];
+    int e_pos[ngpu][loop_count]; int col_pos[ngpu];
     for(int i = 0; i < rr_times; ++i)
     {
         if(i % ngpu == 0 && i > 0) loop++;
         if(i == rr_times - 1) col = last_round;
 
         dev_id = i % ngpu; 
-        pos = loop * (col + 1);
-        if(loop == 0) e_pos[dev_id] = 0;
-
         e_count = eCounts[dev_id][loop]; e_start = eDispls[dev_id][loop];
 
-        CHECK_CUDA( cudaSetDevice(dev_id) )
-        CHECK_CUDA( cudaMemcpy(d_cscColPtrTR[dev_id] + pos, cscColPtrTR + colDispls[dev_id][loop], 
-                        (col + 1) * sizeof(int), cudaMemcpyHostToDevice) )
+        if(loop == 0) 
+        {
+            e_pos[dev_id][loop] = 0; 
+            col_pos[dev_id] = 0;
+            total_e[dev_id] = 0;
+        }
 
-        CHECK_CUDA( cudaMemcpy(d_cscRowIdxTR[dev_id] + e_pos[dev_id], cscRowIdxTR + e_start, 
+        CHECK_CUDA( cudaSetDevice(dev_id) )
+
+        CHECK_CUDA( cudaMemcpy(d_cscRowIdxTR[dev_id] + total_e[dev_id], cscRowIdxTR + e_start, 
                         e_count * sizeof(int), cudaMemcpyHostToDevice) )
 
-        CHECK_CUDA( cudaMemcpy(d_cscValTR[dev_id] + e_pos[dev_id], cscValTR + e_start, 
+        CHECK_CUDA( cudaMemcpy(d_cscValTR[dev_id] + total_e[dev_id], cscValTR + e_start, 
                         e_count * sizeof(VALUE_TYPE), cudaMemcpyHostToDevice) )
 
-        CHECK_CUDA( cudaMemcpy(d_b[dev_id] + pos - loop, b + colDispls[dev_id][loop], 
+        CHECK_CUDA( cudaMemcpy(d_cscColPtrTR[dev_id] + col_pos[dev_id], cscColPtrTR + colDispls[dev_id][loop], 
+                        (col + 1) * sizeof(int), cudaMemcpyHostToDevice) )
+
+        CHECK_CUDA( cudaMemcpy(d_b[dev_id] + col_pos[dev_id] - loop, b + colDispls[dev_id][loop], 
                         col * sizeof(VALUE_TYPE), cudaMemcpyHostToDevice) )
-        
-        e_pos[dev_id] += e_count;
+
+        if(loop > 0) e_pos[dev_id][loop] = eCounts[dev_id][loop - 1] + e_pos[dev_id][loop - 1];
+        col_pos[dev_id] += col + 1;
+        total_e[dev_id] += e_count;
     }
 
     // Allocate and set vector X on devices
@@ -239,15 +247,16 @@ int round_robin(         const int           *cscColPtrTR,
     }
 
     // Allocate and copy col and elm displacement arrays for each device.
-    int* d_colDispls[ngpu], *d_eDispls[ngpu];
+    int* d_colDispls[ngpu], *d_eDispls[ngpu], *d_ePos[ngpu];
     for(int i = 0; i < ngpu; ++i)
     {
         CHECK_CUDA( cudaSetDevice(i) )
         CHECK_CUDA( cudaMalloc((void**)&d_colDispls[i], loop_count * sizeof(int)) )
         CHECK_CUDA( cudaMalloc((void**)&d_eDispls[i], loop_count * sizeof(int)) )
+        CHECK_CUDA( cudaMalloc((void**)&d_ePos[i], loop_count * sizeof(int)) )
         CHECK_CUDA( cudaMemcpy(d_colDispls[i], colDispls[i], loop_count * sizeof(int), cudaMemcpyHostToDevice) )
         CHECK_CUDA( cudaMemcpy(d_eDispls[i], eDispls[i], loop_count * sizeof(int), cudaMemcpyHostToDevice) )
-
+        CHECK_CUDA( cudaMemcpy(d_ePos[i], e_pos[i], loop_count * sizeof(int), cudaMemcpyHostToDevice) )
     }
 
     // For safety, wait until all allocations are done.
@@ -314,7 +323,7 @@ int round_robin(         const int           *cscColPtrTR,
             num_blocks = loop_count;
             round_robin_executor<<< num_blocks, num_threads >>>
                                 (d_cscColPtrTR[i], d_cscRowIdxTR[i], d_cscValTR[i],
-                                    colCounts[i], ngpu, i, d_colDispls[i], d_eDispls[i], 
+                                    colCounts[i], d_colDispls[i], d_eDispls[i], d_ePos[i],
                                         d_b[i], d_x[i], s_in_degree, s_left_sum);
         }
 
@@ -328,19 +337,21 @@ int round_robin(         const int           *cscColPtrTR,
         time_cuda_solve += (t2.tv_sec - t1.tv_sec) * 1000.0 + (t2.tv_usec - t1.tv_usec) / 1000.0;
     }
 
-    time_cuda_solve /= BENCH_REPEAT;
+    //time_cuda_solve /= BENCH_REPEAT;
     double flop = 2*(double)nnzTR;
 
-    printf("unified+shared SpTRSV solve used %4.2f ms, throughput is %4.2f gflops\n",
+    printf("round robin SpTRSV solve used %4.2f ms, throughput is %4.2f gflops\n",
            time_cuda_solve, flop/(1e6*time_cuda_solve));
 
     // Gather partial device x vectors on host
+    int pos;
     col = WARP_PER_BLOCK; dev_id = 0; loop = 0;
     for(int i = 0; i < rr_times; ++i)
     {
         if(i % ngpu == 0 && i > 0) loop++;
         if(i == rr_times - 1) col = last_round;
-        dev_id = i % ngpu; pos = col * loop;
+        dev_id = i % ngpu; 
+        pos = WARP_PER_BLOCK * loop;
         CHECK_CUDA( cudaSetDevice(dev_id) )
         CHECK_CUDA( cudaMemcpy(x + colDispls[dev_id][loop], d_x[dev_id] + pos, 
                         col * sizeof(VALUE_TYPE), cudaMemcpyDeviceToHost) )
@@ -366,8 +377,9 @@ int round_robin(         const int           *cscColPtrTR,
     for(int i = 0; i < ngpu; i++)
     {   
         cudaSetDevice(i);
-        //cudaFree(d_in_degree[i]);
-        //cudaFree(d_left_sum[i]);
+        cudaFree(d_colDispls[i]);
+        cudaFree(d_eDispls[i]);
+        cudaFree(d_ePos[i]);
         cudaFree(d_cscColPtrTR[i]);
         cudaFree(d_cscRowIdxTR[i]);
         cudaFree(d_cscValTR[i]);
