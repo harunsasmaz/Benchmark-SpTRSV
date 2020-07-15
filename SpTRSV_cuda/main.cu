@@ -6,7 +6,7 @@
 
 #include "sptrsv_syncfree_serialref.h"
 #include "sptrsv_syncfree_cuda.h"
-#include "sptrsv_zerocopy_cuda.h"
+#include "naive_unified.h"
 #include "unified_and_shared.h"
 #include "unified_and_shared_2.h"
 #include "round_robin.h"
@@ -14,7 +14,7 @@
 int main(int argc, char ** argv)
 {
     // report precision of floating-point
-    printf("---------------------------------------------------------------------------------------------\n");
+    //printf("---------------------------------------------------------------------------------------------\n");
     char  *precision;
     if (sizeof(VALUE_TYPE) == 4)
     {
@@ -30,9 +30,9 @@ int main(int argc, char ** argv)
         return 0;
     }
 
-    printf("PRECISION = %s\n", precision);
-    printf("Benchmark REPEAT = %i\n", BENCH_REPEAT);
-    printf("---------------------------------------------------------------------------------------------\n");
+    // printf("PRECISION = %s\n", precision);
+    // printf("Benchmark REPEAT = %i\n", BENCH_REPEAT);
+    //printf("---------------------------------------------------------------------------------------------\n");
 
     int m, n, nnzA, isSymmetricA;
     int *csrRowPtrA;
@@ -67,7 +67,7 @@ int main(int argc, char ** argv)
         device_id = atoi(argv[argi]);
         argi++;
     }
-    printf("device_id = %i\n", device_id);
+    //printf("device_id = %i\n", device_id);
 
     // load the number of right-hand-side
     char *rhsstr;
@@ -84,7 +84,7 @@ int main(int argc, char ** argv)
         rhs = atoi(argv[argi]);
         argi++;
     }
-    printf("rhs = %i\n", rhs);
+    //printf("rhs = %i\n", rhs);
 
     // load substitution, forward or backward
     char *substitutionstr;
@@ -98,8 +98,8 @@ int main(int argc, char ** argv)
         substitution = SUBSTITUTION_FORWARD;
     else if (strcmp(substitutionstr, "-backward") == 0)
         substitution = SUBSTITUTION_BACKWARD;
-    printf("substitutionstr = %s\n", substitutionstr);
-    printf("substitution = %i\n", substitution);
+    // printf("substitutionstr = %s\n", substitutionstr);
+    // printf("substitution = %i\n", substitution);
 
     char *partitionstr;
     if(argc > argi)
@@ -115,10 +115,10 @@ int main(int argc, char ** argv)
         argi++;
     }
 
-    if(partition == COL_PARTITION)
-        printf("partition = Equal cols\n");
-    else if(partition == NNZ_PARTITION)
-        printf("partition = Equal nnz\n");
+    // if(partition == COL_PARTITION)
+    //     printf("partition = Equal cols\n");
+    // else if(partition == NNZ_PARTITION)
+    //     printf("partition = Equal nnz\n");
         
     // load matrix file type, mtx, cscl, or cscu
     char *matstr;
@@ -127,7 +127,7 @@ int main(int argc, char ** argv)
         matstr = argv[argi];
         argi++;
     }
-    printf("matstr = %s\n", matstr);
+    //printf("matstr = %s\n", matstr);
 
     // load matrix data from file
     char  *filename;
@@ -147,7 +147,7 @@ int main(int argc, char ** argv)
         csrColIdxA = (int *)malloc(nnzA * sizeof(int));
         csrValA    = (VALUE_TYPE *)malloc(nnzA * sizeof(VALUE_TYPE));
         mmio_data(csrRowPtrA, csrColIdxA, csrValA, filename);
-        printf("input matrix A: ( %i, %i ) nnz = %i\n", m, n, nnzA);
+        //printf("input matrix A: ( %i, %i ) nnz = %i\n", m, n, nnzA);
 
         // extract L or U with a unit diagonal of A
         int *csrRowPtr_tmp = (int *)malloc((m+1) * sizeof(int));
@@ -363,114 +363,132 @@ int main(int argc, char ** argv)
     //                          substitution, rhs, x, b, x_ref);
 
     // set device
-    cudaSetDevice(device_id);
-    cudaDeviceProp deviceProp;
-    cudaGetDeviceProperties(&deviceProp, device_id);
+    // cudaSetDevice(device_id);
+    // cudaDeviceProp deviceProp;
+    // cudaGetDeviceProperties(&deviceProp, device_id);
+
+    // printf("---------------------------------------------------------------------------------------------\n");
+    // printf("Device [ %i ] %s @ %4.2f MHz\n", device_id, deviceProp.name, deviceProp.clockRate * 1e-3f);
+    // printf("---------------------------------------------------------------------------------------------\n");
+
+    //run cuda syncfree SpTRSV or SpTRSM
+    // printf("---------------------------------------------------------------------------------------------\n");
+    // double gflops_autotuned = 0;
+    // sptrsv_syncfree_cuda(cscColPtrTR, cscRowIdxTR, cscValTR, m, n, nnzTR,
+    //                    substitution, rhs, OPT_WARP_AUTO, x, b, x_ref, &gflops_autotuned);
+
+    // printf("---------------------------------------------------------------------------------------------\n");
+    
+    // printf("---------------------------------------------------------------------------------------------\n");
+  
+    // naive_unified(cscColPtrTR, cscRowIdxTR, cscValTR, m, n, nnzTR, substitution, partition,
+    //                     x, b, x_ref, 1);
+
+    // printf("---------------------------------------------------------------------------------------------\n");
 
     printf("---------------------------------------------------------------------------------------------\n");
-    printf("Device [ %i ] %s @ %4.2f MHz\n", device_id, deviceProp.name, deviceProp.clockRate * 1e-3f);
+  
+    naive_unified(cscColPtrTR, cscRowIdxTR, cscValTR, m, n, nnzTR, substitution, partition,
+                        x, b, x_ref, 2);
 
-    // run cuda syncfree SpTRSV or SpTRSM
+    printf("---------------------------------------------------------------------------------------------\n");
+    
+    // printf("---------------------------------------------------------------------------------------------\n");
+  
+    // naive_unified(cscColPtrTR, cscRowIdxTR, cscValTR, m, n, nnzTR, substitution, partition,
+    //                      x, b, x_ref, 3);
+
+    // printf("---------------------------------------------------------------------------------------------\n");
+
+    // printf("---------------------------------------------------------------------------------------------\n");
+  
+    // naive_unified(cscColPtrTR, cscRowIdxTR, cscValTR, m, n, nnzTR, substitution, partition,
+    //                      x, b, x_ref, 4);
+
+    // printf("---------------------------------------------------------------------------------------------\n");
+    
+
+    // printf("---------------------------------------------------------------------------------------------\n");
+
+    // round_robin(cscColPtrTR, cscRowIdxTR, cscValTR, m, n, nnzTR, substitution, partition,
+    //         x, b, x_ref, 1);
+    
+    // printf("---------------------------------------------------------------------------------------------\n");
+
+    printf("---------------------------------------------------------------------------------------------\n");
 
     round_robin(cscColPtrTR, cscRowIdxTR, cscValTR, m, n, nnzTR, substitution, partition,
             x, b, x_ref, 2);
 
+    printf("---------------------------------------------------------------------------------------------\n");
+
+    round_robin(cscColPtrTR, cscRowIdxTR, cscValTR, m, n, nnzTR, substitution, partition,
+            x, b, x_ref, 3);
+    
+    printf("---------------------------------------------------------------------------------------------\n");
+
     // round_robin(cscColPtrTR, cscRowIdxTR, cscValTR, m, n, nnzTR, substitution, partition,
-    //         x, b, x_ref, 2);
+    //         x, b, x_ref, 4);
+        
+    // printf("---------------------------------------------------------------------------------------------\n");
 
-    /* printf("---------------------------------------------------------------------------------------------\n");
-    double gflops_autotuned = 0;
-    sptrsv_syncfree_cuda(cscColPtrTR, cscRowIdxTR, cscValTR, m, n, nnzTR,
-                       substitution, rhs, OPT_WARP_AUTO, x, b, x_ref, &gflops_autotuned);
-
-    printf("---------------------------------------------------------------------------------------------\n");
-
-    printf("---------------------------------------------------------------------------------------------\n");
+    // printf("---------------------------------------------------------------------------------------------\n");
   
-    unified_and_shared(cscColPtrTR, cscRowIdxTR, cscValTR, m, n, nnzTR, substitution, partition,
-                        x, b, x_ref, 1);
+    // unified_and_shared(cscColPtrTR, cscRowIdxTR, cscValTR, m, n, nnzTR, substitution, partition,
+    //                     x, b, x_ref, 1);
 
-    printf("---------------------------------------------------------------------------------------------\n");
+    // printf("---------------------------------------------------------------------------------------------\n");
 
-    printf("---------------------------------------------------------------------------------------------\n");
+    // printf("---------------------------------------------------------------------------------------------\n");
   
-    unified_and_shared(cscColPtrTR, cscRowIdxTR, cscValTR, m, n, nnzTR, substitution, partition,
-                        x, b, x_ref, 2);
+    // unified_and_shared(cscColPtrTR, cscRowIdxTR, cscValTR, m, n, nnzTR, substitution, partition,
+    //                     x, b, x_ref, 2);
 
-    printf("---------------------------------------------------------------------------------------------\n");
+    // printf("---------------------------------------------------------------------------------------------\n");
 
-    printf("---------------------------------------------------------------------------------------------\n");
+    // printf("---------------------------------------------------------------------------------------------\n");
   
-    unified_and_shared(cscColPtrTR, cscRowIdxTR, cscValTR, m, n, nnzTR, substitution, partition,
-                        x, b, x_ref, 3);
+    // unified_and_shared(cscColPtrTR, cscRowIdxTR, cscValTR, m, n, nnzTR, substitution, partition,
+    //                     x, b, x_ref, 3);
 
-    printf("---------------------------------------------------------------------------------------------\n");
+    // printf("---------------------------------------------------------------------------------------------\n");
 
-    printf("---------------------------------------------------------------------------------------------\n");
+    // printf("---------------------------------------------------------------------------------------------\n");
   
-    unified_and_shared(cscColPtrTR, cscRowIdxTR, cscValTR, m, n, nnzTR, substitution, partition,
-                        x, b, x_ref, 4);
+    // unified_and_shared(cscColPtrTR, cscRowIdxTR, cscValTR, m, n, nnzTR, substitution, partition,
+    //                     x, b, x_ref, 4);
 
-    printf("---------------------------------------------------------------------------------------------\n");
+    // printf("---------------------------------------------------------------------------------------------\n");
     
-    printf("---------------------------------------------------------------------------------------------\n");
+    // printf("---------------------------------------------------------------------------------------------\n");
   
-    unified_and_shared_2(cscColPtrTR, cscRowIdxTR, cscValTR, m, n, nnzTR, substitution, partition,
-                        x, b, x_ref, 1);
+    // unified_and_shared_2(cscColPtrTR, cscRowIdxTR, cscValTR, m, n, nnzTR, substitution, partition,
+    //                     x, b, x_ref, 1);
 
-    printf("---------------------------------------------------------------------------------------------\n");
+    // printf("---------------------------------------------------------------------------------------------\n");
 
-    printf("---------------------------------------------------------------------------------------------\n");
+    // printf("---------------------------------------------------------------------------------------------\n");
   
-    unified_and_shared_2(cscColPtrTR, cscRowIdxTR, cscValTR, m, n, nnzTR, substitution, partition,
-                        x, b, x_ref, 2);
+    // unified_and_shared_2(cscColPtrTR, cscRowIdxTR, cscValTR, m, n, nnzTR, substitution, partition,
+    //                     x, b, x_ref, 2);
 
-    printf("---------------------------------------------------------------------------------------------\n");
+    // printf("---------------------------------------------------------------------------------------------\n");
 
-    printf("---------------------------------------------------------------------------------------------\n");
+    // printf("---------------------------------------------------------------------------------------------\n");
   
-    unified_and_shared_2(cscColPtrTR, cscRowIdxTR, cscValTR, m, n, nnzTR, substitution, partition,
-                        x, b, x_ref, 3);
+    // unified_and_shared_2(cscColPtrTR, cscRowIdxTR, cscValTR, m, n, nnzTR, substitution, partition,
+    //                     x, b, x_ref, 3);
 
-    printf("---------------------------------------------------------------------------------------------\n");
+    // printf("---------------------------------------------------------------------------------------------\n");
 
-    printf("---------------------------------------------------------------------------------------------\n");
+    // printf("---------------------------------------------------------------------------------------------\n");
   
-    unified_and_shared_2(cscColPtrTR, cscRowIdxTR, cscValTR, m, n, nnzTR, substitution, partition,
-                        x, b, x_ref, 4);
+    // unified_and_shared_2(cscColPtrTR, cscRowIdxTR, cscValTR, m, n, nnzTR, substitution, partition,
+    //                     x, b, x_ref, 4);
 
-    printf("---------------------------------------------------------------------------------------------\n");
+    // printf("---------------------------------------------------------------------------------------------\n");
 
-    printf("---------------------------------------------------------------------------------------------\n");
-  
-    sptrsv_zerocopy_cuda(cscColPtrTR, cscRowIdxTR, cscValTR, m, n, nnzTR, substitution, partition,
-                        x, b, x_ref, 1);
-
-    printf("---------------------------------------------------------------------------------------------\n");
     
-    printf("---------------------------------------------------------------------------------------------\n");
-  
-    sptrsv_zerocopy_cuda(cscColPtrTR, cscRowIdxTR, cscValTR, m, n, nnzTR, substitution, partition,
-                        x, b, x_ref, 2);
-
-    printf("---------------------------------------------------------------------------------------------\n");
-    
-    printf("---------------------------------------------------------------------------------------------\n");
-  
-    sptrsv_zerocopy_cuda(cscColPtrTR, cscRowIdxTR, cscValTR, m, n, nnzTR, substitution, partition,
-                         x, b, x_ref, 3);
-
-    printf("---------------------------------------------------------------------------------------------\n");
-
-    printf("---------------------------------------------------------------------------------------------\n");
-  
-    sptrsv_zerocopy_cuda(cscColPtrTR, cscRowIdxTR, cscValTR, m, n, nnzTR, substitution, partition,
-                         x, b, x_ref, 4);
-
-    printf("---------------------------------------------------------------------------------------------\n");
-    */
-    
-
     // done!
     free(cscRowIdxTR);
     free(cscColPtrTR);

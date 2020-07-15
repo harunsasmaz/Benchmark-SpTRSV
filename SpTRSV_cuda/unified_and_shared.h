@@ -1,5 +1,5 @@
-#ifndef _UNIFIED_AND_SHARED_
-#define _UNIFIED_AND_SHARED_
+#ifndef _UNIFIED_AND_SHARED_H
+#define _UNIFIED_AND_SHARED_H
 
 #include "common.h"
 #include "utils.h"
@@ -16,13 +16,11 @@
 }
 
 __global__
-void unified_and_shared_analyser(const int   *d_cscRowIdx,
-                                   const int    m,
+void unified_and_shared_analyser(  const int   *d_cscRowIdx,
                                    const int    nnz,
-                                   const int    displs,
                                          int   *s_in_degree)
 {
-    const int global_id = blockIdx.x * blockDim.x + threadIdx.x; //get_global_id(0);
+    const int global_id = blockIdx.x * blockDim.x + threadIdx.x;
     if (global_id < nnz)
     {
         atomicAdd(&s_in_degree[d_cscRowIdx[global_id]], 1);
@@ -31,11 +29,9 @@ void unified_and_shared_analyser(const int   *d_cscRowIdx,
 }
 
 __global__
-void unified_and_shared_executor(const int* __restrict__        d_cscColPtr,
-                                   const int* __restrict__        d_cscRowIdx,
+void unified_and_shared_executor(  const int*        __restrict__ d_cscColPtr,
+                                   const int*        __restrict__ d_cscRowIdx,
                                    const VALUE_TYPE* __restrict__ d_cscVal,
-                                         int*                     d_in_degree,
-                                         VALUE_TYPE*              d_left_sum,
                                    const int                      n,
                                    const int                      displs,
                                    const int                      e_displs,
@@ -54,7 +50,7 @@ void unified_and_shared_executor(const int* __restrict__        d_cscColPtr,
 
     const int local_warp_id = threadIdx.x / WARP_SIZE;
     const int lane_id = (WARP_SIZE - 1) & threadIdx.x;
-    int starting_x = (global_id / (WARP_PER_BLOCK * WARP_SIZE)) * WARP_PER_BLOCK;
+    int starting_x = blockIdx.x * WARP_PER_BLOCK + displs;
 
     const int pos = d_cscColPtr[global_x_id];
     const VALUE_TYPE coef = (VALUE_TYPE)1 / d_cscVal[pos - e_displs];
@@ -68,7 +64,7 @@ void unified_and_shared_executor(const int* __restrict__        d_cscColPtr,
     
     clock_t start;
     do
-    {
+    {   
         start = clock();
         __syncwarp();
     }
@@ -83,7 +79,7 @@ void unified_and_shared_executor(const int* __restrict__        d_cscColPtr,
     for(int j = start_ptr + lane_id; j < stop_ptr; j += WARP_SIZE)
     {
         const int row = d_cscRowIdx[j - e_displs];
-        const bool cond = row < starting_x + WARP_PER_BLOCK;
+        const bool cond = row < n + displs && row < starting_x + WARP_PER_BLOCK;
 
         if(cond)
         {   
@@ -91,7 +87,7 @@ void unified_and_shared_executor(const int* __restrict__        d_cscColPtr,
             atomicAdd((VALUE_TYPE *)&x_left_sum[index], xi * d_cscVal[j - e_displs]);
             __threadfence_block();
             atomicAdd((int *)&x_in_degree[index], 1);
-
+            
         } else {
             atomicAdd(&s_left_sum[row], xi * d_cscVal[j - e_displs]);
             __threadfence();
@@ -100,10 +96,9 @@ void unified_and_shared_executor(const int* __restrict__        d_cscColPtr,
     }
 
     if(!lane_id) d_x[global_x_id] = xi;
-
 }
 
-int unified_and_shared(const int           *cscColPtrTR,
+int unified_and_shared  (const int           *cscColPtrTR,
                          const int           *cscRowIdxTR,
                          const VALUE_TYPE    *cscValTR,
                          const int            m,
@@ -124,8 +119,7 @@ int unified_and_shared(const int           *cscColPtrTR,
     
     // calculate which GPU gets which cols
     int colCounts[ngpu], colDispls[ngpu];
-    colDispls[0] = 0;
-    colCounts[0] = 0;
+    colDispls[0] = 0; colCounts[0] = 0;
     if(partition == COL_PARTITION)
         equal_col_partition(ngpu, n, colCounts, colDispls);
     else if(partition == NNZ_PARTITION)
@@ -195,21 +189,6 @@ int unified_and_shared(const int           *cscColPtrTR,
         CHECK_CUDA( cudaMemset(d_x[i], 0, cols * sizeof(VALUE_TYPE)) )
     }
 
-    //  Define device in_degree and left_sum arrays for each device
-    int *d_in_degree[ngpu];
-    VALUE_TYPE *d_left_sum[ngpu];
-
-    // Allocate device in_degree and left_sum arrays for each device
-    for(int i = 0; i < ngpu; i++)
-    {
-        int cols = colCounts[i];
-        CHECK_CUDA( cudaSetDevice(i) )
-        CHECK_CUDA( cudaMalloc((void **)&d_in_degree[i], cols * sizeof(int)) )
-        CHECK_CUDA( cudaMalloc((void **)&d_left_sum[i], cols * sizeof(VALUE_TYPE)) )
-        CHECK_CUDA( cudaMemset(d_left_sum[i], 0, cols * sizeof(VALUE_TYPE)) )
-        CHECK_CUDA( cudaMemset(d_in_degree[i], 0, cols * sizeof(int)) )
-    }
-
     // For safety, wait until all allocations are done.
     for(int i = 0; i < ngpu; i++)
     {
@@ -218,8 +197,6 @@ int unified_and_shared(const int           *cscColPtrTR,
     }
 
     //  - cuda zercopu SpTRSV analysis start!
-    //printf(" - unified+shared SpTRSV analysis start!\n");
-
     struct timeval t1, t2;
     gettimeofday(&t1, NULL);
 
@@ -234,7 +211,7 @@ int unified_and_shared(const int           *cscColPtrTR,
             CHECK_CUDA( cudaSetDevice(i) )
             num_blocks = ceil((double)eCounts[i] / num_threads);
             unified_and_shared_analyser<<< num_blocks, num_threads >>>
-                                        (d_cscRowIdxTR[i], colCounts[i], eCounts[i], eDispls[i], s_in_degree);
+                                        (d_cscRowIdxTR[i], eCounts[i], s_in_degree);
         }
 
         // For safety, wait until are devices are done with analysis.
@@ -252,8 +229,6 @@ int unified_and_shared(const int           *cscColPtrTR,
     printf("unified+shared SpTRSV analysis on L used %4.2f ms\n", time_cuda_analysis);
 
     //  - cuda syncfree SpTRSV solve start!
-    //printf(" - unified+shared SpTRSV solve start!\n");
-
     num_threads = WARP_PER_BLOCK * WARP_SIZE;
     double time_cuda_solve = 0;
 
@@ -263,7 +238,7 @@ int unified_and_shared(const int           *cscColPtrTR,
     memcpy(s_in_degree_backup, s_in_degree, n * sizeof(int));
 
     // SOLVE KERNEL
-    for(int k = 0; k < BENCH_REPEAT; k++)
+    for(int k = 0; k < 100; k++)
     {
         CHECK_CUDA( cudaMemset(s_left_sum, 0, n * sizeof(VALUE_TYPE)) );
         memcpy(s_in_degree, s_in_degree_backup, n * sizeof(int));
@@ -273,8 +248,6 @@ int unified_and_shared(const int           *cscColPtrTR,
         {
             CHECK_CUDA( cudaSetDevice(i) )
             CHECK_CUDA( cudaMemset(d_x[i], 0, colCounts[i] * sizeof(VALUE_TYPE)) )
-            CHECK_CUDA( cudaMemset(d_in_degree[i], 0, colCounts[i] * sizeof(int)) )
-            CHECK_CUDA( cudaMemset(d_left_sum[i], 0, colCounts[i] * sizeof(VALUE_TYPE)) )
         }
 
         gettimeofday(&t1, NULL);
@@ -285,8 +258,8 @@ int unified_and_shared(const int           *cscColPtrTR,
             num_blocks = ceil((double)colCounts[i] / ((double)num_threads/WARP_SIZE) );
             unified_and_shared_executor<<< num_blocks, num_threads >>>
                                 (d_cscColPtrTR[i], d_cscRowIdxTR[i], d_cscValTR[i],
-                                    d_in_degree[i], d_left_sum[i], colCounts[i], colDispls[i], 
-                                        eDispls[i], substitution, d_b[i], d_x[i], s_in_degree, s_left_sum);
+                                    colCounts[i], colDispls[i], eDispls[i], substitution, 
+                                        d_b[i], d_x[i], s_in_degree, s_left_sum);
         }
 
         for(int i = 0; i < ngpu; i++)
@@ -299,7 +272,7 @@ int unified_and_shared(const int           *cscColPtrTR,
         time_cuda_solve += (t2.tv_sec - t1.tv_sec) * 1000.0 + (t2.tv_usec - t1.tv_usec) / 1000.0;
     }
 
-    time_cuda_solve /= BENCH_REPEAT;
+    time_cuda_solve /= 100;
     double flop = 2*(double)nnzTR;
 
     printf("unified+shared SpTRSV solve used %4.2f ms, throughput is %4.2f gflops\n",
@@ -333,8 +306,6 @@ int unified_and_shared(const int           *cscColPtrTR,
     for(int i = 0; i < ngpu; i++)
     {   
         cudaSetDevice(i);
-        cudaFree(d_in_degree[i]);
-        cudaFree(d_left_sum[i]);
         cudaFree(d_cscColPtrTR[i]);
         cudaFree(d_cscRowIdxTR[i]);
         cudaFree(d_cscValTR[i]);

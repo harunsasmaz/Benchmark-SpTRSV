@@ -135,6 +135,11 @@ int sptrsv_syncfree_serialref(const int           *cscColPtrTR,
 
     sptrsv_syncfree_analyser(cscRowIdxTR, m, n, nnzTR, graphInDegree);
 
+    for(int i = 0; i < n; ++i)
+    {
+        printf("%d\n", graphInDegree[i]);
+    }
+
     gettimeofday(&t2, NULL);
     double time_sptrsv_analyser = (t2.tv_sec - t1.tv_sec) * 1000.0 + (t2.tv_usec - t1.tv_usec) / 1000.0;
     printf("SpTRSV Serial analyser on L used %4.2f ms\n", time_sptrsv_analyser);

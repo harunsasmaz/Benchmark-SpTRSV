@@ -1,5 +1,5 @@
-#ifndef _SPTRSV_ZEROCOPY_CUDA_
-#define _SPTRSV_ZEROCOPY_CUDA_
+#ifndef _NAIVE_UNIFIED_H
+#define _NAIVE_UNIFIED_H
 
 #include "common.h"
 #include "utils.h"
@@ -16,7 +16,7 @@
 }
 
 __global__
-void sptrsv_zerocopy_cuda_analyser(const int   *d_cscRowIdx,
+void naive_unified_analyser(const int   *d_cscRowIdx,
                                    const int    m,
                                    const int    nnz,
                                    const int    displs,
@@ -31,7 +31,7 @@ void sptrsv_zerocopy_cuda_analyser(const int   *d_cscRowIdx,
 }
 
 __global__
-void sptrsv_zerocopy_cuda_executor(const int* __restrict__        d_cscColPtr,
+void naive_unified_executor(const int* __restrict__        d_cscColPtr,
                                    const int* __restrict__        d_cscRowIdx,
                                    const VALUE_TYPE* __restrict__ d_cscVal,
                                          int*                     d_in_degree,
@@ -106,7 +106,7 @@ void sptrsv_zerocopy_cuda_executor(const int* __restrict__        d_cscColPtr,
     if (!lane_id) d_x[index] = xi;
 }
 
-int sptrsv_zerocopy_cuda(const int           *cscColPtrTR,
+int naive_unified(       const int           *cscColPtrTR,
                          const int           *cscRowIdxTR,
                          const VALUE_TYPE    *cscValTR,
                          const int            m,
@@ -221,8 +221,6 @@ int sptrsv_zerocopy_cuda(const int           *cscColPtrTR,
     }
 
     //  - cuda zercopu SpTRSV analysis start!
-    //printf(" - cuda zerocopy SpTRSV analysis start!\n");
-
     struct timeval t1, t2;
     gettimeofday(&t1, NULL);
 
@@ -236,7 +234,7 @@ int sptrsv_zerocopy_cuda(const int           *cscColPtrTR,
         {
             CHECK_CUDA( cudaSetDevice(i) )
             num_blocks = ceil((double)eCounts[i] / num_threads);
-            sptrsv_zerocopy_cuda_analyser<<< num_blocks, num_threads >>>
+            naive_unified_analyser<<< num_blocks, num_threads >>>
                                         (d_cscRowIdxTR[i], colCounts[i], eCounts[i], eDispls[i], s_in_degree);
         }
 
@@ -248,20 +246,13 @@ int sptrsv_zerocopy_cuda(const int           *cscColPtrTR,
         }
     }
 
-    for(int i = 0; i < n; ++i)
-    {
-        printf("%d\n", s_in_degree[i]);
-    }
-
     gettimeofday(&t2, NULL);
     double time_cuda_analysis = (t2.tv_sec - t1.tv_sec) * 1000.0 + (t2.tv_usec - t1.tv_usec) / 1000.0;
     time_cuda_analysis /= BENCH_REPEAT;
 
-    printf("cuda zerocopy SpTRSV analysis on L used %4.2f ms\n", time_cuda_analysis);
+    printf("naive unified SpTRSV analysis on L used %4.2f ms\n", time_cuda_analysis);
 
     //  - cuda syncfree SpTRSV solve start!
-    //printf(" - cuda zerocopy SpTRSV solve start!\n");
-
     num_threads = WARP_PER_BLOCK * WARP_SIZE;
     double time_cuda_solve = 0;
 
@@ -291,7 +282,7 @@ int sptrsv_zerocopy_cuda(const int           *cscColPtrTR,
         {
             cudaSetDevice(i);
             num_blocks = ceil((double)colCounts[i] / ((double)num_threads/WARP_SIZE) );
-            sptrsv_zerocopy_cuda_executor<<< num_blocks, num_threads >>>
+            naive_unified_executor<<< num_blocks, num_threads >>>
                                 (d_cscColPtrTR[i], d_cscRowIdxTR[i], d_cscValTR[i],
                                     d_in_degree[i], d_left_sum[i], colCounts[i], colDispls[i], 
                                         eDispls[i], substitution, d_b[i], d_x[i], s_in_degree, s_left_sum);
@@ -310,7 +301,7 @@ int sptrsv_zerocopy_cuda(const int           *cscColPtrTR,
     time_cuda_solve /= BENCH_REPEAT;
     double flop = 2*(double)nnzTR;
 
-    printf("cuda zerocopy SpTRSV solve used %4.2f ms, throughput is %4.2f gflops\n",
+    printf("naive unified SpTRSV solve used %4.2f ms, throughput is %4.2f gflops\n",
            time_cuda_solve, flop/(1e6*time_cuda_solve));
 
     // Gather partial device x vectors on host
@@ -334,9 +325,9 @@ int sptrsv_zerocopy_cuda(const int           *cscColPtrTR,
     res = ref == 0 ? res : res / ref;
 
     if (res < accuracy)
-        printf("cuda zerocopy SpTRSV executor passed! |x-xref|/|xref| = %8.2e\n", res);
+        printf("naive unified SpTRSV executor passed! |x-xref|/|xref| = %8.2e\n", res);
     else
-        printf("cuda zerocopy SpTRSV executor _NOT_ passed! |x-xref|/|xref| = %8.2e\n", res);
+        printf("naive unified SpTRSV executor _NOT_ passed! |x-xref|/|xref| = %8.2e\n", res);
 
     for(int i = 0; i < ngpu; i++)
     {   

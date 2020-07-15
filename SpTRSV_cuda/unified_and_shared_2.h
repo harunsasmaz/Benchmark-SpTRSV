@@ -1,5 +1,5 @@
-#ifndef _UNIFIED_AND_SHARED_2_
-#define _UNIFIED_AND_SHARED_2_
+#ifndef _UNIFIED_AND_SHARED_2_H
+#define _UNIFIED_AND_SHARED_2_H
 
 #include "common.h"
 #include "utils.h"
@@ -17,12 +17,10 @@
 
 __global__
 void unified_and_shared_2_analyser(const int   *d_cscRowIdx,
-                                   const int    m,
                                    const int    nnz,
-                                   const int    displs,
                                          int   *s_in_degree)
 {
-    const int global_id = blockIdx.x * blockDim.x + threadIdx.x; //get_global_id(0);
+    const int global_id = blockIdx.x * blockDim.x + threadIdx.x;
     if (global_id < nnz)
     {
         atomicAdd(&s_in_degree[d_cscRowIdx[global_id]], 1);
@@ -31,8 +29,8 @@ void unified_and_shared_2_analyser(const int   *d_cscRowIdx,
 }
 
 __global__
-void unified_and_shared_2_executor(const int* __restrict__        d_cscColPtr,
-                                   const int* __restrict__        d_cscRowIdx,
+void unified_and_shared_2_executor(const int*        __restrict__ d_cscColPtr,
+                                   const int*        __restrict__ d_cscRowIdx,
                                    const VALUE_TYPE* __restrict__ d_cscVal,
                                          int*                     d_in_degree,
                                          VALUE_TYPE*              d_left_sum,
@@ -54,7 +52,7 @@ void unified_and_shared_2_executor(const int* __restrict__        d_cscColPtr,
 
     const int local_warp_id = threadIdx.x / WARP_SIZE;
     const int lane_id = (WARP_SIZE - 1) & threadIdx.x;
-    int starting_x = (global_id / (WARP_PER_BLOCK * WARP_SIZE)) * WARP_PER_BLOCK;
+    int starting_x = blockIdx.x * WARP_PER_BLOCK + displs;
 
     const int pos = d_cscColPtr[global_x_id];
     const VALUE_TYPE coef = (VALUE_TYPE)1 / d_cscVal[pos - e_displs];
@@ -66,10 +64,8 @@ void unified_and_shared_2_executor(const int* __restrict__        d_cscColPtr,
     }
     __syncthreads();
     
-    clock_t start;
     do
     {
-        start = clock();
         __syncwarp();
     }
     while((x_in_degree[local_warp_id] + d_in_degree[global_x_id]) != s_in_degree[global_x_id + displs]);
@@ -109,7 +105,6 @@ void unified_and_shared_2_executor(const int* __restrict__        d_cscColPtr,
     }
 
     if(!lane_id) d_x[global_x_id] = xi;
-
 }
 
 int unified_and_shared_2(const int           *cscColPtrTR,
@@ -227,8 +222,6 @@ int unified_and_shared_2(const int           *cscColPtrTR,
     }
 
     //  - cuda zercopu SpTRSV analysis start!
-    //printf(" - unified+shared SpTRSV analysis start!\n");
-
     struct timeval t1, t2;
     gettimeofday(&t1, NULL);
 
@@ -243,7 +236,7 @@ int unified_and_shared_2(const int           *cscColPtrTR,
             CHECK_CUDA( cudaSetDevice(i) )
             num_blocks = ceil((double)eCounts[i] / num_threads);
             unified_and_shared_2_analyser<<< num_blocks, num_threads >>>
-                                        (d_cscRowIdxTR[i], colCounts[i], eCounts[i], eDispls[i], s_in_degree);
+                                        (d_cscRowIdxTR[i], eCounts[i], s_in_degree);
         }
 
         // For safety, wait until are devices are done with analysis.
@@ -261,8 +254,6 @@ int unified_and_shared_2(const int           *cscColPtrTR,
     printf("unified+shared 2 SpTRSV analysis on L used %4.2f ms\n", time_cuda_analysis);
 
     //  - cuda syncfree SpTRSV solve start!
-    //printf(" - unified+shared SpTRSV solve start!\n");
-
     num_threads = WARP_PER_BLOCK * WARP_SIZE;
     double time_cuda_solve = 0;
 

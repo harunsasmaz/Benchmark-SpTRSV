@@ -1,5 +1,5 @@
-#ifndef _ROUND_ROBIN_
-#define _ROUND_ROBIN_
+#ifndef _ROUND_ROBIN_H
+#define _ROUND_ROBIN_H
 
 #include "common.h"
 #include "utils.h"
@@ -15,8 +15,18 @@
     }                                                                          \
 }
 
+int sum_elms(int elms[], int n)
+{   
+    int sum = 0;
+    for(int i = 0; i < n; ++i)
+    {
+        sum += elms[i];
+    }
+    return sum;
+}
+
 __global__
-void printk(int* ptr, int* qtr, int n)
+void printk(double* ptr, double* qtr, int n)
 {
     for(int i = 0; i < n; ++i)
     {
@@ -108,16 +118,6 @@ void round_robin_executor(         const int*        __restrict__ d_cscColPtr,
     if(!lane_id) d_x[local_x_id] = xi;
 }
 
-int sum_elms(int elms[], int n)
-{   
-    int sum = 0;
-    for(int i = 0; i < n; ++i)
-    {
-        sum += elms[i];
-    }
-    return sum;
-}
-
 int round_robin(         const int           *cscColPtrTR,
                          const int           *cscRowIdxTR,
                          const VALUE_TYPE    *cscValTR,
@@ -139,6 +139,7 @@ int round_robin(         const int           *cscColPtrTR,
 
     int rr_times = ceil((double)n/WARP_PER_BLOCK);          // the number of rounds
     int loop_count = rr_times / ngpu;                       // the number of complete loops for each device
+    int remainder = rr_times % ngpu;                        // how many gpu has an additional loop
     int last_round = n - (rr_times - 1) * WARP_PER_BLOCK;   // last round gets the remaining cols.
     
     // Allocate displacement holder pointers
@@ -191,18 +192,20 @@ int round_robin(         const int           *cscColPtrTR,
     // Allocate partial device arrays for matrix L and vector b for devices
     for(int i = 0; i < ngpu; i++)
     {   
-        int offset = rr_times/ngpu + 1;
+        int offset = remainder == i + 1 ? loop_count + 1 : loop_count;
+        int elms = sum_elms(eCounts[i], offset);
+
         CHECK_CUDA( cudaSetDevice(i) )
         CHECK_CUDA( cudaMalloc((void **)&d_cscColPtrTR[i], (colCounts[i] + offset) * sizeof(int)) )
-        CHECK_CUDA( cudaMalloc((void **)&d_cscRowIdxTR[i], sum_elms(eCounts[i], loop_count) * sizeof(int)) )
-        CHECK_CUDA( cudaMalloc((void **)&d_cscValTR[i],    sum_elms(eCounts[i], loop_count) * sizeof(VALUE_TYPE)) )
+        CHECK_CUDA( cudaMalloc((void **)&d_cscRowIdxTR[i], elms * sizeof(int)) )
+        CHECK_CUDA( cudaMalloc((void **)&d_cscValTR[i],    elms * sizeof(VALUE_TYPE)) )
         CHECK_CUDA( cudaMalloc((void **)&d_b[i],           colCounts[i] * sizeof(VALUE_TYPE)) )
     }
 
     // Distribute values of matrix L and vector B from host to devices
     int total_e[ngpu], e_count, e_start;
     col = WARP_PER_BLOCK; dev_id = 0; loop = 0;
-    int e_pos[ngpu][loop_count]; int col_pos[ngpu];
+    int e_pos[ngpu][loop_count + 1]; int col_pos[ngpu];
     for(int i = 0; i < rr_times; ++i)
     {
         if(i % ngpu == 0 && i > 0) loop++;
@@ -222,10 +225,10 @@ int round_robin(         const int           *cscColPtrTR,
 
         CHECK_CUDA( cudaMemcpy(d_cscRowIdxTR[dev_id] + total_e[dev_id], cscRowIdxTR + e_start, 
                         e_count * sizeof(int), cudaMemcpyHostToDevice) )
-
+        
         CHECK_CUDA( cudaMemcpy(d_cscValTR[dev_id] + total_e[dev_id], cscValTR + e_start, 
                         e_count * sizeof(VALUE_TYPE), cudaMemcpyHostToDevice) )
-
+        
         CHECK_CUDA( cudaMemcpy(d_cscColPtrTR[dev_id] + col_pos[dev_id], cscColPtrTR + colDispls[dev_id][loop], 
                         (col + 1) * sizeof(int), cudaMemcpyHostToDevice) )
 
@@ -250,13 +253,14 @@ int round_robin(         const int           *cscColPtrTR,
     int* d_colDispls[ngpu], *d_eDispls[ngpu], *d_ePos[ngpu];
     for(int i = 0; i < ngpu; ++i)
     {
+        int offset = remainder == i + 1 ? loop_count + 1 : loop_count;
         CHECK_CUDA( cudaSetDevice(i) )
-        CHECK_CUDA( cudaMalloc((void**)&d_colDispls[i], loop_count * sizeof(int)) )
-        CHECK_CUDA( cudaMalloc((void**)&d_eDispls[i], loop_count * sizeof(int)) )
-        CHECK_CUDA( cudaMalloc((void**)&d_ePos[i], loop_count * sizeof(int)) )
-        CHECK_CUDA( cudaMemcpy(d_colDispls[i], colDispls[i], loop_count * sizeof(int), cudaMemcpyHostToDevice) )
-        CHECK_CUDA( cudaMemcpy(d_eDispls[i], eDispls[i], loop_count * sizeof(int), cudaMemcpyHostToDevice) )
-        CHECK_CUDA( cudaMemcpy(d_ePos[i], e_pos[i], loop_count * sizeof(int), cudaMemcpyHostToDevice) )
+        CHECK_CUDA( cudaMalloc((void**)&d_colDispls[i], offset * sizeof(int)) )
+        CHECK_CUDA( cudaMalloc((void**)&d_eDispls[i], offset * sizeof(int)) )
+        CHECK_CUDA( cudaMalloc((void**)&d_ePos[i], offset * sizeof(int)) )
+        CHECK_CUDA( cudaMemcpy(d_colDispls[i], colDispls[i], offset * sizeof(int), cudaMemcpyHostToDevice) )
+        CHECK_CUDA( cudaMemcpy(d_eDispls[i], eDispls[i], offset * sizeof(int), cudaMemcpyHostToDevice) )
+        CHECK_CUDA( cudaMemcpy(d_ePos[i], e_pos[i], offset * sizeof(int), cudaMemcpyHostToDevice) )
     }
 
     // For safety, wait until all allocations are done.
@@ -272,18 +276,27 @@ int round_robin(         const int           *cscColPtrTR,
 
     int num_threads = 128;
     int num_blocks;
+    double time_cuda_analysis = 0.0;
 
-    for(int k = 0; k < 1; k++)
+    int elms[ngpu], offset = 0;
+    for(int i = 0; i < ngpu; ++i)
+    {
+        offset = remainder == i + 1 ? loop_count + 1 : loop_count;
+        elms[i] = sum_elms(eCounts[i], offset);
+    }
+
+    for(int k = 0; k < BENCH_REPEAT; k++)
     {
         CHECK_CUDA( cudaMemset(s_in_degree, 0, n * sizeof(int)) )
 
+        gettimeofday(&t1, NULL);
+
         for(int i = 0; i < ngpu; i++)
         {   
-            int elms = sum_elms(eCounts[i], loop_count);
             CHECK_CUDA( cudaSetDevice(i) )
-            num_blocks = ceil((double)elms / num_threads);
+            num_blocks = ceil((double)elms[i] / num_threads);
             round_robin_analyser<<< num_blocks, num_threads >>>
-                                        (d_cscRowIdxTR[i], elms, s_in_degree);
+                                        (d_cscRowIdxTR[i], elms[i], s_in_degree);
         }
 
         // For safety, wait until are devices are done with analysis.
@@ -292,12 +305,12 @@ int round_robin(         const int           *cscColPtrTR,
             CHECK_CUDA( cudaSetDevice(i) )
             CHECK_CUDA( cudaDeviceSynchronize() )
         }
+
+        gettimeofday(&t2, NULL);
+        time_cuda_analysis += (t2.tv_sec - t1.tv_sec) * 1000.0 + (t2.tv_usec - t1.tv_usec) / 1000.0;
     }
 
-    gettimeofday(&t2, NULL);
-    double time_cuda_analysis = (t2.tv_sec - t1.tv_sec) * 1000.0 + (t2.tv_usec - t1.tv_usec) / 1000.0;
     time_cuda_analysis /= BENCH_REPEAT;
-
     printf("round robin SpTRSV analysis on L used %4.2f ms\n", time_cuda_analysis);
 
     //  - round robin SpTRSV solve start!
@@ -320,7 +333,7 @@ int round_robin(         const int           *cscColPtrTR,
         for(int i = 0; i < ngpu; i++)
         {
             CHECK_CUDA( cudaSetDevice(i) )
-            num_blocks = loop_count;
+            num_blocks = remainder == i + 1 ? loop_count + 1 : loop_count;
             round_robin_executor<<< num_blocks, num_threads >>>
                                 (d_cscColPtrTR[i], d_cscRowIdxTR[i], d_cscValTR[i],
                                     colCounts[i], d_colDispls[i], d_eDispls[i], d_ePos[i],
@@ -350,7 +363,7 @@ int round_robin(         const int           *cscColPtrTR,
     {
         if(i % ngpu == 0 && i > 0) loop++;
         if(i == rr_times - 1) col = last_round;
-        dev_id = i % ngpu; 
+        dev_id = i % ngpu;
         pos = WARP_PER_BLOCK * loop;
         CHECK_CUDA( cudaSetDevice(dev_id) )
         CHECK_CUDA( cudaMemcpy(x + colDispls[dev_id][loop], d_x[dev_id] + pos, 
@@ -390,7 +403,6 @@ int round_robin(         const int           *cscColPtrTR,
     cudaFree(s_in_degree);
     cudaFree(s_left_sum);
     cudaFree(s_in_degree_backup);
-
     return 0;
 }
 
